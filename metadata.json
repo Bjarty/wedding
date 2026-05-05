@@ -1,0 +1,6 @@
+{
+  "name": "Elegance & Odyssey",
+  "description": "A sophisticated personal wedding portal featuring our love story, event details, and honeycomb honeymoon adventures.",
+  "requestFramePermissions": ["geolocation"],
+  "majorCapabilities": ["AI Storytelling", "Real-time Journey Tracking"]
+}

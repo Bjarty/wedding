@@ -1,0 +1,77 @@
+@import url('https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,400..900;1,400..900&family=Montserrat:ital,wght@0,100..900;1,100..900&family=Cormorant+Garamond:ital,wght@0,300..700;1,300..700&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-serif: "Playfair Display", serif;
+  --font-sans: "Montserrat", sans-serif;
+  --font-accent: "Cormorant Garamond", serif;
+
+  --color-stone-dark: #1C1917;
+  --color-gold: #CA8A04;
+  --color-cream: #FAFAF9;
+  --color-warm-black: #292524;
+  --color-taupe: #78716C;
+}
+
+@layer base {
+  body {
+    @apply bg-cream text-warm-black font-sans antialiased;
+    scroll-behavior: smooth;
+  }
+
+  h1, h2, h3, h4 {
+    @apply font-serif;
+  }
+}
+
+@layer utilities {
+  .mesh-gradient {
+    background-color: #FAFAF9;
+    background-image: 
+      radial-gradient(at 5% 5%, hsla(43, 86%, 41%, 0.2) 0px, transparent 50%),
+      radial-gradient(at 95% 5%, hsla(28, 10%, 15%, 0.1) 0px, transparent 50%),
+      radial-gradient(at 50% 100%, hsla(43, 86%, 41%, 0.15) 0px, transparent 50%),
+      radial-gradient(at 0% 100%, hsla(28, 10%, 15%, 0.05) 0px, transparent 50%);
+    background-size: 200% 200%;
+    animation: mesh-rotate 20s ease-in-out infinite alternate;
+  }
+
+  @keyframes mesh-rotate {
+    0% { background-position: 0% 0%; filter: hue-rotate(0deg); }
+    50% { background-position: 100% 100%; filter: hue-rotate(10deg) saturate(1.2); }
+    100% { background-position: 0% 100%; filter: hue-rotate(20deg); }
+  }
+
+  .text-glow {
+    text-shadow: 0 0 30px rgba(202, 138, 4, 0.4);
+  }
+
+  .card-glass {
+    @apply bg-white/60 backdrop-blur-md border border-gold/20 shadow-xl;
+  }
+
+  .glass {
+    @apply backdrop-blur-md bg-stone-dark/10 border border-gold/10;
+  }
+}
+
+@keyframes beam {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(100%); }
+}
+
+.border-beam {
+  position: relative;
+  overflow: hidden;
+}
+
+.border-beam::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 2px;
+  background: linear-gradient(90deg, transparent, #CA8A04, transparent);
+  animation: beam 2s infinite linear;
+}

@@ -32,9 +32,10 @@ export default function OurStory() {
   const targetRef = useRef<HTMLDivElement>(null);
   const { scrollYProgress } = useScroll({
     target: targetRef,
+      offset: ["start start", "end end"]
   });
 
-  const x = useTransform(scrollYProgress, [0, 1], ['0%', '-75%']);
+  const x = useTransform(scrollYProgress, [0, 1], ['0%', '-80%']);
 
   return (
     <section id="story" ref={targetRef} className="relative h-[300vh] bg-stone-dark text-cream scroll-mt-24">

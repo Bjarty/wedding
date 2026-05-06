@@ -37,7 +37,7 @@ export default function OurStory() {
   const x = useTransform(scrollYProgress, [0, 1], ['0%', '-75%']);
 
   return (
-    <section id="story" ref={targetRef} className="relative h-[300vh] bg-stone-dark text-cream">
+    <section id="story" ref={targetRef} className="relative h-[300vh] bg-stone-dark text-cream scroll-mt-24">
       <div className="sticky top-0 h-screen flex items-center overflow-hidden">
         <motion.div style={{ x }} className="flex gap-12 px-20">
           <div className="flex-shrink-0 w-[50vw] flex flex-col justify-center pr-20">

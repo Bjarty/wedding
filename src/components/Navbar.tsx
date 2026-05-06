@@ -53,6 +53,20 @@ export default function Navbar() {
             <motion.a
               key={item.label}
               href={item.href}
+              onClick={(e) => {
+                e.preventDefault();
+
+                const el = document.querySelector(item.href);
+                if (!el) return;
+            
+                const yOffset = window.innerHeight * 0.3; // adjust this
+                const y = el.getBoundingClientRect().top + window.scrollY + yOffset;
+            
+                window.scrollTo({
+                  top: y,
+                  behavior: "smooth",
+                });
+              }}
               className="text-[10px] uppercase tracking-[0.3em] font-bold text-stone-dark/60 hover:text-gold transition-colors relative group"
               whileHover={{ y: -1 }}
             >

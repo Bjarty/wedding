@@ -1,19 +1,22 @@
 import { motion } from 'motion/react';
-import { MapPin, Music, Utensils, Sparkles } from 'lucide-react';
+import { CakeSlice, Clock3, Heart, MapPin, Music, Users, Utensils } from 'lucide-react';
 import { siteContent } from '../content/siteContent';
 import type { ScheduleIcon } from '../types';
 
 const scheduleIcons = {
-  sparkles: Sparkles,
+  clock: Clock3,
+  heart: Heart,
+  cake: CakeSlice,
   utensils: Utensils,
+  users: Users,
   music: Music,
-} satisfies Record<ScheduleIcon, typeof Sparkles>;
+} satisfies Record<ScheduleIcon, typeof Clock3>;
 
 export default function Schedule() {
   const { schedule } = siteContent;
 
   return (
-    <section id={schedule.sectionId} className="py-32 bg-cream">
+    <section id={schedule.sectionId} className="scroll-mt-24 py-32 bg-cream">
       <div className="max-w-5xl mx-auto px-6">
         <div className="text-center mb-24">
           <motion.h2 

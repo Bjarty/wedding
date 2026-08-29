@@ -1,40 +1,48 @@
 import { motion } from 'motion/react';
-import { Plane, Car, Train, Map as MapIcon } from 'lucide-react';
+import { BedDouble, Car, CircleParking, Map as MapIcon, Navigation } from 'lucide-react';
 import { siteContent } from '../content/siteContent';
+import type { TravelIcon } from '../types';
 
 const travelIcons = {
-  plane: Plane,
-  train: Train,
   car: Car,
-  map: MapIcon,
-};
+  parking: CircleParking,
+  bed: BedDouble,
+  taxi: Navigation,
+} satisfies Record<TravelIcon, typeof Car>;
 
 export default function Location() {
   const content = siteContent.location;
 
   return (
-    <section id={content.sectionId} className="py-32 bg-stone-dark text-cream relative overflow-hidden">
+    <section id={content.sectionId} className="scroll-mt-24 py-32 bg-stone-dark text-cream relative overflow-hidden">
       <div className="absolute top-0 right-0 w-1/3 h-full bg-[radial-gradient(circle_at_top_right,_var(--color-gold)_0%,_transparent_70%)] opacity-10" />
       
       <div className="max-w-7xl mx-auto px-6 grid md:grid-cols-2 gap-20 items-center">
-        <motion.div
+        <motion.a
+           href={content.mapHref}
+           target="_blank"
+           rel="noreferrer"
+           aria-label={`${content.mapLabel}: ${content.venueName}, ${content.address}`}
            initial={{ opacity: 0, scale: 0.9 }}
            whileInView={{ opacity: 1, scale: 1 }}
-           className="relative aspect-square rounded-3xl overflow-hidden shadow-2xl border border-cream/10"
+           viewport={{ once: true }}
+           className="mesh-gradient group relative flex min-h-[28rem] items-center justify-center overflow-hidden rounded-3xl border border-cream/10 text-stone-dark shadow-2xl outline-none focus-visible:ring-4 focus-visible:ring-gold/60 md:aspect-square md:min-h-0"
         >
-          <img 
-            src={content.image}
-            alt={content.imageAlt}
-            className="w-full h-full object-cover grayscale hover:grayscale-0 transition-all duration-1000"
-          />
-          <div className="absolute inset-0 bg-stone-dark/20 flex items-center justify-center pointer-events-none">
-            <div className="text-center">
-              <MapIcon className="w-16 h-16 text-gold mx-auto mb-4 animate-pulse" />
-              <h3 className="text-4xl font-serif">{content.venueName}</h3>
-              <p className="font-accent italic text-xl">{content.address}</p>
-            </div>
+          <div className="max-w-sm px-8 text-center">
+            <MapIcon aria-hidden="true" className="mx-auto mb-6 h-16 w-16 text-gold transition-transform duration-500 group-hover:scale-110" />
+            <h3 className="text-5xl font-serif">{content.venueName}</h3>
+            <p className="mt-2 text-sm font-bold uppercase tracking-[0.2em] text-taupe">
+              {content.venueContext}
+            </p>
+            <address className="mt-6 font-accent text-2xl italic">
+              {content.address}
+            </address>
+            <span className="mt-8 inline-flex items-center gap-2 rounded-full bg-stone-dark px-6 py-3 text-xs font-bold uppercase tracking-[0.2em] text-cream transition-colors group-hover:bg-gold">
+              {content.mapLabel}
+              <Navigation aria-hidden="true" className="h-4 w-4" />
+            </span>
           </div>
-        </motion.div>
+        </motion.a>
 
         <div>
           <h2 className="text-6xl font-serif mb-8 text-gold italic">{content.heading}</h2>
@@ -45,26 +53,17 @@ export default function Location() {
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
             {content.travelOptions.map((option) => {
               const Icon = travelIcons[option.icon];
-              const isMaps = option.variant === 'maps';
 
               return (
                 <div
                   key={option.id}
-                  className={isMaps
-                    ? 'p-8 bg-gold/10 rounded-3xl border border-gold/30 hover:bg-gold/20 transition-all cursor-pointer group'
-                    : 'p-8 card-glass rounded-3xl border border-white/10 hover:border-gold/50 transition-all group'}
+                  className="card-glass group rounded-3xl border border-white/10 p-8 transition-all hover:border-gold/50"
                 >
                   <Icon className="w-10 h-10 text-gold mb-6 group-hover:scale-110 transition-transform" />
-                  <h4 className={isMaps
-                    ? 'font-serif italic text-2xl mb-3 text-gold'
-                    : 'font-serif italic text-2xl mb-3 text-stone-dark'}
-                  >
+                  <h4 className="mb-3 font-serif text-2xl italic text-stone-dark">
                     {option.title}
                   </h4>
-                  <p className={isMaps
-                    ? 'text-sm opacity-80 font-light leading-relaxed text-gold/80'
-                    : 'text-sm opacity-60 font-light leading-relaxed'}
-                  >
+                  <p className="text-sm font-light leading-relaxed text-stone-dark/65">
                     {option.description}
                   </p>
                 </div>

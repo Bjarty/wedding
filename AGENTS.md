@@ -3,7 +3,7 @@
 ## Build and tests
 
 - Use Node.js 22 and install from the lockfile with `npm ci`.
-- Run `npm run build` before handing off a change. There is no separate automated test suite yet.
+- Run `npm run check` and `npm run build` before handing off a change. There is no separate automated browser test suite yet.
 - For Pages changes, verify that `dist/CNAME` contains exactly `lisetteenbjarty.nl`.
 
 ## UX

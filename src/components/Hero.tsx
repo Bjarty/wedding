@@ -1,6 +1,9 @@
 import { motion } from 'motion/react';
+import { siteContent } from '../content/siteContent';
 
 export default function Hero() {
+  const { hero } = siteContent;
+
   return (
     <section className="relative h-screen w-full flex items-center justify-center overflow-hidden mesh-gradient">
       <div className="absolute inset-0 z-0">
@@ -25,7 +28,7 @@ export default function Hero() {
           transition={{ duration: 0.8, delay: 0.5 }}
           className="font-accent italic text-3xl md:text-4xl text-taupe mb-8 drop-shadow-sm"
         >
-          To have and to hold
+          {hero.eyebrow}
         </motion.p>
         
         <motion.h1
@@ -34,8 +37,8 @@ export default function Hero() {
           transition={{ duration: 1.2, ease: [0.16, 1, 0.3, 1] }}
           className="text-7xl md:text-9xl lg:text-[13rem] font-serif tracking-tighter leading-none mb-10 text-stone-dark"
         >
-          Arthur <span className="text-gold italic text-glow">&</span> <br /> 
-          Beatrice
+          {hero.firstName} <span className="text-gold italic text-glow">&</span> <br />
+          {hero.secondName}
         </motion.h1>
 
         <motion.div
@@ -46,7 +49,7 @@ export default function Hero() {
         >
           <div className="h-px w-24 bg-gold mb-4" />
           <p className="uppercase tracking-[0.4em] text-sm md:text-base font-bold">
-            September 12th, 2026 • Florence, Italy
+            {hero.dateLine}
           </p>
           <div className="h-px w-24 bg-gold mt-4" />
         </motion.div>
@@ -57,7 +60,7 @@ export default function Hero() {
         animate={{ y: [0, 10, 0] }}
         transition={{ duration: 2, repeat: Infinity }}
       >
-        <span className="text-[10px] uppercase tracking-widest font-bold">Scroll to Explore</span>
+        <span className="text-[10px] uppercase tracking-widest font-bold">{hero.scrollLabel}</span>
         <div className="w-[1px] h-12 bg-stone-dark" />
       </motion.div>
     </section>

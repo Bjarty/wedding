@@ -11,6 +11,7 @@ const TURNSTILE_TEST_SECRET_SHA256 = Object.freeze({
   'server-fail': '1e3e58656012d861e23deae64f177673d7b86a9c55fe1d5d10b94e3c9755d168',
 });
 const REQUIRED_SECRET_KEYS = [
+  'ACCESS_CODE_HASH_SECRET',
   'INVITATION_TOKEN_HASH_SECRET',
   'TURNSTILE_SECRET',
   'WRITER_HMAC_SECRET',
@@ -43,7 +44,7 @@ export const validateTestSecrets = (
   }
   const keys = Object.keys(secrets).sort();
   if (JSON.stringify(keys) !== JSON.stringify(REQUIRED_SECRET_KEYS)) {
-    throw new Error('the temporary secrets file must contain exactly the four test secrets');
+    throw new Error('the temporary secrets file must contain exactly the five test secrets');
   }
   if (!Object.hasOwn(TURNSTILE_TEST_SECRET_SHA256, turnstileMode)) {
     throw new Error('turnstile mode must be pass or server-fail');
@@ -60,7 +61,11 @@ export const validateTestSecrets = (
   ) {
     throw new Error('WRITER_URL must be an Apps Script /exec URL');
   }
-  for (const key of ['WRITER_HMAC_SECRET', 'INVITATION_TOKEN_HASH_SECRET']) {
+  for (const key of [
+    'ACCESS_CODE_HASH_SECRET',
+    'WRITER_HMAC_SECRET',
+    'INVITATION_TOKEN_HASH_SECRET',
+  ]) {
     if (typeof secrets[key] !== 'string' || !/^[A-Za-z0-9_-]{64}$/.test(secrets[key])) {
       throw new Error(`${key} must be 48 random bytes encoded as 64 base64url characters`);
     }
@@ -68,8 +73,14 @@ export const validateTestSecrets = (
       throw new Error(`${key} does not look independently generated`);
     }
   }
-  if (secrets.WRITER_HMAC_SECRET === secrets.INVITATION_TOKEN_HASH_SECRET) {
-    throw new Error('the writer and invitation-token secrets must be different');
+  if (
+    new Set([
+      secrets.ACCESS_CODE_HASH_SECRET,
+      secrets.WRITER_HMAC_SECRET,
+      secrets.INVITATION_TOKEN_HASH_SECRET,
+    ]).size !== 3
+  ) {
+    throw new Error('the writer, invitation-token, and access-code secrets must be different');
   }
 };
 

@@ -13,10 +13,17 @@ export const TURNSTILE_ACTIONS = {
 export const MEAL_CHOICES = ['fish', 'meat', 'vegetarian', 'vegan'] as const;
 export type MealChoice = (typeof MEAL_CHOICES)[number];
 
+export const INVITATION_VARIANTS = ['day', 'evening'] as const;
+export type InvitationVariant = (typeof INVITATION_VARIANTS)[number];
+
+export const ACCESS_CODE_ALPHABET = '23456789ABCDEFGHJKMNPQRSTVWXYZ' as const;
+
 export const LIMITS = {
   bodyBytes: 16_384,
   inviteTokenMin: 32,
   inviteTokenMax: 128,
+  accessCodeLength: 20,
+  accessCodeInputMax: 32,
   turnstileTokenMax: 2_048,
   idMax: 64,
   displayNameMax: 160,
@@ -33,7 +40,11 @@ export interface RateLimitBinding {
 }
 
 export interface Env {
+  ACCESS_CODE_HASH_SECRET: string;
   ALLOWED_ORIGIN: string;
+  CLIENT_RATE_LIMITER: RateLimitBinding;
+  GLOBAL_RATE_LIMITER: RateLimitBinding;
+  HOUSEHOLD_CODES_ENABLED: string;
   INVITATION_TOKEN_HASH_SECRET: string;
   RESOLVE_RATE_LIMITER: RateLimitBinding;
   SUBMIT_RATE_LIMITER: RateLimitBinding;
@@ -44,10 +55,17 @@ export interface Env {
   WRITER_HMAC_SECRET: string;
 }
 
-export interface ResolveRequest {
-  inviteToken: string;
+export type InvitationCredential =
+  | { inviteToken: string; accessCode?: never }
+  | { accessCode: string; inviteToken?: never };
+
+export type CredentialHash =
+  | { tokenHash: string; accessCodeHash?: never }
+  | { accessCodeHash: string; tokenHash?: never };
+
+export type ResolveRequest = InvitationCredential & {
   turnstileToken: string;
-}
+};
 
 export interface GuestSubmission {
   guestId: string;
@@ -55,8 +73,7 @@ export interface GuestSubmission {
   mealChoice?: MealChoice;
 }
 
-export interface SubmitRequest {
-  inviteToken: string;
+export type SubmitRequest = InvitationCredential & {
   idempotencyKey: string;
   revision: number;
   attending: boolean;
@@ -64,7 +81,7 @@ export interface SubmitRequest {
   email?: string;
   message?: string;
   turnstileToken: string;
-}
+};
 
 export interface CurrentRsvp {
   revision: number;
@@ -79,6 +96,8 @@ export interface CurrentRsvp {
 export interface ResolveResult {
   householdId: string;
   displayName: string;
+  invitationVariant: InvitationVariant;
+  mealChoiceRequired: boolean;
   maxGuests: number;
   guests: Array<{
     guestId: string;

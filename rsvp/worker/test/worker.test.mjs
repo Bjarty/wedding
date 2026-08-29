@@ -3,6 +3,7 @@ import { webcrypto } from 'node:crypto';
 import test from 'node:test';
 
 import { handleRequest } from '../dist/index.js';
+import { WRITER_TIMEOUT_MILLISECONDS } from '../dist/integrations.js';
 import { createInvitation } from '../scripts/provision-invitation.mjs';
 
 const ORIGIN = 'https://lisetteenbjarty.nl';
@@ -10,15 +11,27 @@ const WRITER_URL = 'https://script.google.com/macros/s/test-deployment/exec';
 const REQUEST_ID = '00000000-0000-4000-8000-000000000001';
 const IDEMPOTENCY_KEY = '11111111-1111-4111-8111-111111111111';
 const RAW_TOKEN = 'AbCdEfGhIjKlMnOpQrStUvWxYz0123456789_-token';
+const RAW_ACCESS_CODE = '2a3bc-4d5ef 6g7hj-8kmnp';
+const NORMALIZED_ACCESS_CODE = '2A3BC4D5EF6G7HJ8KMNP';
 const HASH_SECRET = 'token-hash-secret-that-is-at-least-32-bytes';
+const ACCESS_HASH_SECRET = 'abcdefghijklmnopqrstuvwxyz0123456789_-ABCDEFGHIJKLMNOPQRSTUVWXYZ';
 const WRITER_SECRET = 'writer-signing-secret-that-is-at-least-32-bytes';
 const DUMMY_SECRET_PLACEHOLDER = 'turnstile-dummy-secret-supplied-outside-git';
 const DUMMY_SECRET_SHA256 = 'fb8f35129df87662c650ada12fd614f1b58dce4a37fdd7589ba3a6b9a78c0aae';
 
 const allowRateLimit = { limit: async () => ({ success: true }) };
 
+test('allows a slow durable Apps Script write to finish', () => {
+  assert.equal(WRITER_TIMEOUT_MILLISECONDS, 60_000);
+  assert.ok(WRITER_TIMEOUT_MILLISECONDS > 30_000);
+});
+
 const baseEnv = {
+  ACCESS_CODE_HASH_SECRET: ACCESS_HASH_SECRET,
   ALLOWED_ORIGIN: ORIGIN,
+  CLIENT_RATE_LIMITER: allowRateLimit,
+  GLOBAL_RATE_LIMITER: allowRateLimit,
+  HOUSEHOLD_CODES_ENABLED: 'true',
   INVITATION_TOKEN_HASH_SECRET: HASH_SECRET,
   RESOLVE_RATE_LIMITER: allowRateLimit,
   SUBMIT_RATE_LIMITER: allowRateLimit,
@@ -31,6 +44,8 @@ const baseEnv = {
 const resolveData = {
   householdId: 'hh_example',
   displayName: 'Familie Voorbeeld',
+  invitationVariant: 'day',
+  mealChoiceRequired: true,
   maxGuests: 2,
   guests: [
     { guestId: 'guest_1', displayName: 'Gast één' },
@@ -66,6 +81,7 @@ const makeRequest = (path, body, options = {}) =>
     headers: {
       Origin: options.origin ?? ORIGIN,
       'Content-Type': options.contentType ?? 'application/json',
+      'CF-Connecting-IP': '2001:db8::1234',
       ...(options.headers ?? {}),
     },
     body: options.method === 'OPTIONS' || options.method === 'GET' ? undefined : JSON.stringify(body),
@@ -366,6 +382,108 @@ test('resolve accepts and safely shapes an existing response with a receipt numb
   assert.deepEqual(body.data.currentRsvp, currentRsvp);
 });
 
+test('access codes are normalized, domain-hashed, and never sent to the writer', async () => {
+  const mock = makeHappyFetch({
+    action: 'rsvp_resolve',
+    writerData: resolveData,
+    onWriter: async (envelope) => {
+      const payload = decodePayload(envelope);
+      assert.deepEqual(Object.keys(payload.data), ['accessCodeHash']);
+      assert.equal(
+        payload.data.accessCodeHash,
+        await hmacBase64Url(ACCESS_HASH_SECRET, `rsvp-access-code-v1\0${NORMALIZED_ACCESS_CODE}`),
+      );
+      assert.equal(JSON.stringify(payload).toLowerCase().includes(RAW_ACCESS_CODE.toLowerCase()), false);
+      assert.equal(JSON.stringify(payload).includes(NORMALIZED_ACCESS_CODE), false);
+    },
+  });
+  const response = await handleRequest(
+    makeRequest('/v1/households/resolve', {
+      accessCode: RAW_ACCESS_CODE,
+      turnstileToken: 'turnstile-token',
+    }),
+    baseEnv,
+    makeDependencies(mock.fetch),
+  );
+
+  assert.equal(response.status, 200);
+  assert.deepEqual((await parseJson(response)).data, resolveData);
+});
+
+test('access codes fail closed when disabled and requests require exactly one credential', async () => {
+  let calls = 0;
+  const disabled = await handleRequest(
+    makeRequest('/v1/households/resolve', {
+      accessCode: RAW_ACCESS_CODE,
+      turnstileToken: 'turnstile-token',
+    }),
+    { ...baseEnv, HOUSEHOLD_CODES_ENABLED: 'false' },
+    makeDependencies(async () => {
+      calls += 1;
+      throw new Error('must not fetch');
+    }),
+  );
+  assert.equal(disabled.status, 404);
+  assert.equal((await parseJson(disabled)).error.code, 'INVITATION_INVALID');
+  assert.equal(calls, 0);
+
+  for (const body of [
+    { turnstileToken: 'turnstile-token' },
+    { inviteToken: RAW_TOKEN, accessCode: RAW_ACCESS_CODE, turnstileToken: 'turnstile-token' },
+    { accessCode: '2A3BC-4D5EF-6G7HI-8KMNP', turnstileToken: 'turnstile-token' },
+  ]) {
+    const response = await handleRequest(
+      makeRequest('/v1/households/resolve', body),
+      baseEnv,
+      makeDependencies(async () => {
+        throw new Error('must not fetch');
+      }),
+    );
+    const result = await parseJson(response);
+    assert.equal(response.status, 422);
+    assert.equal(result.error.code, 'VALIDATION_FAILED');
+  }
+});
+
+test('evening responses may omit meals while day responses remain strict at the writer boundary', async () => {
+  const currentRsvpWithoutMeals = {
+    revision: 2,
+    receiptNumber: 'RSVP-ABC123',
+    attending: true,
+    guests: [
+      { guestId: 'guest_1', attending: true },
+      { guestId: 'guest_2', attending: false },
+    ],
+    updatedAt: '2027-02-03T10:11:12.000Z',
+  };
+  const eveningData = {
+    ...resolveData,
+    invitationVariant: 'evening',
+    mealChoiceRequired: false,
+    currentRsvp: currentRsvpWithoutMeals,
+  };
+  const eveningMock = makeHappyFetch({ action: 'rsvp_resolve', writerData: eveningData });
+  const evening = await handleRequest(
+    makeRequest('/v1/households/resolve', { inviteToken: RAW_TOKEN, turnstileToken: 'turnstile-token' }),
+    baseEnv,
+    makeDependencies(eveningMock.fetch),
+  );
+  assert.equal(evening.status, 200);
+  assert.deepEqual((await parseJson(evening)).data, eveningData);
+
+  const dayMock = makeHappyFetch({
+    action: 'rsvp_resolve',
+    writerData: { ...resolveData, currentRsvp: currentRsvpWithoutMeals },
+  });
+  const day = await handleRequest(
+    makeRequest('/v1/households/resolve', { inviteToken: RAW_TOKEN, turnstileToken: 'turnstile-token' }),
+    baseEnv,
+    makeDependencies(dayMock.fetch),
+  );
+  assert.equal(day.status, 503);
+  assert.equal((await parseJson(day)).error.code, 'UPSTREAM_UNAVAILABLE');
+});
+
 test('resolve enforces that preset guests never exceed maxGuests', async () => {
   const validMock = makeHappyFetch({
     action: 'rsvp_resolve',
@@ -421,12 +539,44 @@ test('submit forwards only the token hash and normalized validated fields', asyn
   assert.equal(body.data.receiptNumber, 'RSVP-8K2M4P');
 });
 
-test('rejects an invalid or missing meal choice before any upstream call', async () => {
-  for (const mealChoice of [undefined, 'chicken']) {
+test('submit accepts an access code and can omit a meal for writer-enforced evening policy', async () => {
+  const { inviteToken: _inviteToken, ...withoutInviteToken } = submitBody;
+  const accessSubmit = {
+    ...withoutInviteToken,
+    accessCode: RAW_ACCESS_CODE,
+    guests: [
+      { guestId: 'guest_1', attending: true },
+      { guestId: 'guest_2', attending: false },
+    ],
+  };
+  const mock = makeHappyFetch({
+    action: 'rsvp_submit',
+    writerData: submitData,
+    onWriter: async (envelope) => {
+      const payload = decodePayload(envelope);
+      assert.equal(payload.data.tokenHash, undefined);
+      assert.equal(payload.data.accessCode, undefined);
+      assert.equal(
+        payload.data.accessCodeHash,
+        await hmacBase64Url(ACCESS_HASH_SECRET, `rsvp-access-code-v1\0${NORMALIZED_ACCESS_CODE}`),
+      );
+      assert.equal(Object.hasOwn(payload.data.guests[0], 'mealChoice'), false);
+    },
+  });
+  const response = await handleRequest(
+    makeRequest('/v1/rsvps/submit', accessSubmit),
+    baseEnv,
+    makeDependencies(mock.fetch),
+  );
+  assert.equal(response.status, 200);
+  assert.deepEqual((await parseJson(response)).data, submitData);
+});
+
+test('rejects an invalid meal choice before any upstream call', async () => {
+  for (const mealChoice of ['chicken']) {
     let calls = 0;
     const body = structuredClone(submitBody);
-    if (mealChoice === undefined) delete body.guests[0].mealChoice;
-    else body.guests[0].mealChoice = mealChoice;
+    body.guests[0].mealChoice = mealChoice;
 
     const response = await handleRequest(
       makeRequest('/v1/rsvps/submit', body),
@@ -512,6 +662,64 @@ test('per-token rate limiting returns 429 before Turnstile or writer', async () 
   assert.equal(rateLimitKey, await hmacBase64Url(HASH_SECRET, RAW_TOKEN));
   assert.equal(rateLimitKey.includes(RAW_TOKEN), false);
   assert.equal(upstreamCalls, 0);
+});
+
+test('global and privacy-safe client limiting run before credential parsing', async () => {
+  const order = [];
+  let clientKey = '';
+  const env = {
+    ...baseEnv,
+    GLOBAL_RATE_LIMITER: {
+      limit: async ({ key }) => {
+        order.push('global');
+        assert.equal(key, 'rsvp-api-v1');
+        return { success: true };
+      },
+    },
+    CLIENT_RATE_LIMITER: {
+      limit: async ({ key }) => {
+        order.push('client');
+        clientKey = key;
+        return { success: false };
+      },
+    },
+  };
+  const response = await handleRequest(
+    makeRequest('/v1/households/resolve', { deliberately: 'not a credential' }),
+    env,
+    makeDependencies(async () => {
+      throw new Error('must not fetch');
+    }),
+  );
+  assert.equal(response.status, 429);
+  assert.deepEqual(order, ['global', 'client']);
+  assert.equal(
+    clientKey,
+    await hmacBase64Url(ACCESS_HASH_SECRET, 'rsvp-client-ip-v1\u00002001:db8::1234'),
+  );
+  assert.equal(clientKey.includes('2001:db8::1234'), false);
+});
+
+test('global limiting fails closed before client limiting and body parsing', async () => {
+  let clientCalls = 0;
+  const response = await handleRequest(
+    makeRequest('/v1/households/resolve', { inviteToken: RAW_TOKEN }),
+    {
+      ...baseEnv,
+      GLOBAL_RATE_LIMITER: { limit: async () => ({ success: false }) },
+      CLIENT_RATE_LIMITER: {
+        limit: async () => {
+          clientCalls += 1;
+          return { success: true };
+        },
+      },
+    },
+    makeDependencies(async () => {
+      throw new Error('must not fetch');
+    }),
+  );
+  assert.equal(response.status, 429);
+  assert.equal(clientCalls, 0);
 });
 
 test('rate-limit binding failure fails closed before Turnstile or writer', async () => {
@@ -621,8 +829,13 @@ test('enforces body, media type, query, and strict field limits', async () => {
 test('fails closed when secrets are missing, short, or reused', async () => {
   for (const env of [
     { ...baseEnv, WRITER_HMAC_SECRET: '' },
+    { ...baseEnv, ACCESS_CODE_HASH_SECRET: 'short' },
+    { ...baseEnv, HOUSEHOLD_CODES_ENABLED: '' },
     { ...baseEnv, INVITATION_TOKEN_HASH_SECRET: 'short' },
     { ...baseEnv, INVITATION_TOKEN_HASH_SECRET: WRITER_SECRET },
+    { ...baseEnv, ACCESS_CODE_HASH_SECRET: WRITER_SECRET },
+    { ...baseEnv, CLIENT_RATE_LIMITER: undefined },
+    { ...baseEnv, GLOBAL_RATE_LIMITER: undefined },
   ]) {
     const response = await handleRequest(
       makeRequest('/v1/households/resolve', { inviteToken: RAW_TOKEN, turnstileToken: 'token' }),

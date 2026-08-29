@@ -197,8 +197,22 @@ export interface SiteContent {
     statusHeading: string;
     statusMessage: string;
     contactLabel: string;
+    codeEntry: {
+      eyebrow: string;
+      heading: string;
+      introduction: string;
+      label: string;
+      helper: string;
+      invalidFormat: string;
+      submitLabel: string;
+      switchLabel: string;
+    };
     form: {
       invitationHeading: string;
+      dayVariantLabel: string;
+      dayArrivalMessage: string;
+      eveningVariantLabel: string;
+      eveningArrivalMessage: string;
       wrongNamesMessage: string;
       attendanceQuestionPrefix: string;
       attendanceYesLabel: string;
@@ -223,6 +237,7 @@ export interface SiteContent {
     states: {
       loading: string;
       invalidLink: string;
+      invalidCode: string;
       loadError: string;
       offline: string;
       submitting: string;

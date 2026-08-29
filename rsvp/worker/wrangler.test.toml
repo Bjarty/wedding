@@ -1,5 +1,5 @@
 # Beoordeelbare testtemplate. Kopieer dit bestand uitsluitend lokaal naar
-# wrangler.test.local.toml en vervang daar de twee placeholders door ongebruikte,
+# wrangler.test.local.toml en vervang daar de vier placeholders door ongebruikte,
 # onderling verschillende positieve integers uit het doelaccount. Het lokale
 # bestand is genegeerd door Git.
 name = "lisette-bjarty-rsvp-api-test"
@@ -10,6 +10,7 @@ preview_urls = true
 
 [vars]
 ALLOWED_ORIGIN = "http://localhost:3000"
+HOUSEHOLD_CODES_ENABLED = "true"
 TURNSTILE_EXPECTED_HOSTNAME = "localhost"
 TURNSTILE_EXPECTED_ACTION = "test"
 
@@ -19,7 +20,18 @@ required = [
   "WRITER_URL",
   "WRITER_HMAC_SECRET",
   "INVITATION_TOKEN_HASH_SECRET",
+  "ACCESS_CODE_HASH_SECRET",
 ]
+
+[[ratelimits]]
+name = "GLOBAL_RATE_LIMITER"
+namespace_id = "REPLACE_WITH_UNUSED_POSITIVE_INTEGER_GLOBAL"
+simple = { limit = 300, period = 60 }
+
+[[ratelimits]]
+name = "CLIENT_RATE_LIMITER"
+namespace_id = "REPLACE_WITH_UNUSED_POSITIVE_INTEGER_CLIENT"
+simple = { limit = 30, period = 60 }
 
 [[ratelimits]]
 name = "RESOLVE_RATE_LIMITER"

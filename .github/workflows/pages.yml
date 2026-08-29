@@ -47,6 +47,7 @@ jobs:
           # Public values only. The form requires enabled=true plus both
           # values; otherwise the coming-soon message remains rendered.
           VITE_RSVP_ENABLED: ${{ vars.VITE_RSVP_ENABLED }}
+          VITE_RSVP_HOUSEHOLD_CODES_ENABLED: ${{ vars.VITE_RSVP_HOUSEHOLD_CODES_ENABLED }}
           VITE_RSVP_API_BASE_URL: ${{ vars.VITE_RSVP_API_BASE_URL }}
           VITE_TURNSTILE_SITE_KEY: ${{ vars.VITE_TURNSTILE_SITE_KEY }}
 

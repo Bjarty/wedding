@@ -2,10 +2,31 @@ name = "lisette-bjarty-rsvp-api"
 main = "src/index.ts"
 compatibility_date = "2026-08-29"
 workers_dev = false
+preview_urls = false
 
 [vars]
 ALLOWED_ORIGIN = "https://lisetteenbjarty.nl"
+HOUSEHOLD_CODES_ENABLED = "false"
 TURNSTILE_EXPECTED_HOSTNAME = "lisetteenbjarty.nl"
+
+[secrets]
+required = [
+  "TURNSTILE_SECRET",
+  "WRITER_URL",
+  "WRITER_HMAC_SECRET",
+  "INVITATION_TOKEN_HASH_SECRET",
+  "ACCESS_CODE_HASH_SECRET",
+]
+
+[[ratelimits]]
+name = "GLOBAL_RATE_LIMITER"
+namespace_id = "REPLACE_WITH_GLOBAL_NAMESPACE_ID"
+simple = { limit = 300, period = 60 }
+
+[[ratelimits]]
+name = "CLIENT_RATE_LIMITER"
+namespace_id = "REPLACE_WITH_CLIENT_NAMESPACE_ID"
+simple = { limit = 30, period = 60 }
 
 [[ratelimits]]
 name = "RESOLVE_RATE_LIMITER"
@@ -18,5 +39,6 @@ namespace_id = "REPLACE_WITH_SUBMIT_NAMESPACE_ID"
 simple = { limit = 5, period = 60 }
 
 # Configure WRITER_URL, TURNSTILE_SECRET, WRITER_HMAC_SECRET and
-# INVITATION_TOKEN_HASH_SECRET as encrypted Worker secrets. Do not add their
-# values to this file or to Git.
+# INVITATION_TOKEN_HASH_SECRET and ACCESS_CODE_HASH_SECRET as independently
+# generated encrypted Worker secrets. Do not add their values to this file or
+# to Git. Enable household codes only after the matching writer schema exists.

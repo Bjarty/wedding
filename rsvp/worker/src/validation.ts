@@ -1,4 +1,5 @@
 import {
+  ACCESS_CODE_ALPHABET,
   LIMITS,
   MEAL_CHOICES,
   type FieldIssue,
@@ -11,6 +12,8 @@ import {
 export type ParseResult<T> = { ok: true; value: T } | { ok: false; issues: FieldIssue[] };
 
 const INVITE_TOKEN_PATTERN = /^[A-Za-z0-9_-]+$/;
+const ACCESS_CODE_INPUT_PATTERN = /^[A-Za-z0-9 -]+$/;
+const ACCESS_CODE_PATTERN = new RegExp(`^[${ACCESS_CODE_ALPHABET}]{${LIMITS.accessCodeLength}}$`);
 const OPAQUE_ID_PATTERN = /^[A-Za-z0-9_-]+$/;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/u;
@@ -31,6 +34,45 @@ const addUnknownFieldIssue = (
 };
 
 const normalizeText = (value: string) => value.normalize('NFC').trim();
+
+export const normalizeAccessCode = (value: string): string =>
+  normalizeText(value).toUpperCase().replace(/[ -]/g, '');
+
+const parseCredential = (
+  record: Record<string, unknown>,
+  issues: FieldIssue[],
+): { inviteToken: string } | { accessCode: string } | undefined => {
+  const hasInviteToken = Object.hasOwn(record, 'inviteToken');
+  const hasAccessCode = Object.hasOwn(record, 'accessCode');
+  if (hasInviteToken === hasAccessCode) {
+    issues.push({ path: 'credential', code: hasInviteToken ? 'inconsistent' : 'required' });
+    return undefined;
+  }
+
+  if (hasInviteToken) {
+    const inviteToken = requiredString(
+      record,
+      'inviteToken',
+      { min: LIMITS.inviteTokenMin, max: LIMITS.inviteTokenMax, pattern: INVITE_TOKEN_PATTERN },
+      issues,
+    );
+    return inviteToken === undefined ? undefined : { inviteToken };
+  }
+
+  const rawAccessCode = requiredString(
+    record,
+    'accessCode',
+    { min: LIMITS.accessCodeLength, max: LIMITS.accessCodeInputMax, pattern: ACCESS_CODE_INPUT_PATTERN },
+    issues,
+  );
+  if (rawAccessCode === undefined) return undefined;
+  const accessCode = normalizeAccessCode(rawAccessCode);
+  if (!ACCESS_CODE_PATTERN.test(accessCode)) {
+    issues.push({ path: 'accessCode', code: 'invalid_format' });
+    return undefined;
+  }
+  return { accessCode };
+};
 
 const requiredString = (
   record: Record<string, unknown>,
@@ -123,9 +165,9 @@ const parseGuest = (value: unknown, index: number, issues: FieldIssue[]): GuestS
 
   const mealValue = value.mealChoice;
   let mealChoice: MealChoice | undefined;
-  if (attending === true) {
+  if (attending === true && mealValue !== undefined) {
     if (typeof mealValue !== 'string') {
-      guestIssues.push({ path: 'mealChoice', code: mealValue === undefined ? 'required' : 'invalid_type' });
+      guestIssues.push({ path: 'mealChoice', code: 'invalid_type' });
     } else if (!(MEAL_CHOICES as readonly string[]).includes(mealValue)) {
       guestIssues.push({ path: 'mealChoice', code: 'invalid_format' });
     } else {
@@ -152,13 +194,8 @@ export const parseResolveRequest = (value: unknown): ParseResult<ResolveRequest>
   }
 
   const issues: FieldIssue[] = [];
-  addUnknownFieldIssue(value, new Set(['inviteToken', 'turnstileToken']), 'body', issues);
-  const inviteToken = requiredString(
-    value,
-    'inviteToken',
-    { min: LIMITS.inviteTokenMin, max: LIMITS.inviteTokenMax, pattern: INVITE_TOKEN_PATTERN },
-    issues,
-  );
+  addUnknownFieldIssue(value, new Set(['inviteToken', 'accessCode', 'turnstileToken']), 'body', issues);
+  const credential = parseCredential(value, issues);
   const turnstileToken = requiredString(
     value,
     'turnstileToken',
@@ -166,10 +203,10 @@ export const parseResolveRequest = (value: unknown): ParseResult<ResolveRequest>
     issues,
   );
 
-  if (issues.length > 0 || inviteToken === undefined || turnstileToken === undefined) {
+  if (issues.length > 0 || credential === undefined || turnstileToken === undefined) {
     return { ok: false, issues };
   }
-  return { ok: true, value: { inviteToken, turnstileToken } };
+  return { ok: true, value: { ...credential, turnstileToken } };
 };
 
 export const parseSubmitRequest = (value: unknown): ParseResult<SubmitRequest> => {
@@ -182,6 +219,7 @@ export const parseSubmitRequest = (value: unknown): ParseResult<SubmitRequest> =
     value,
     new Set([
       'inviteToken',
+      'accessCode',
       'idempotencyKey',
       'revision',
       'attending',
@@ -194,12 +232,7 @@ export const parseSubmitRequest = (value: unknown): ParseResult<SubmitRequest> =
     issues,
   );
 
-  const inviteToken = requiredString(
-    value,
-    'inviteToken',
-    { min: LIMITS.inviteTokenMin, max: LIMITS.inviteTokenMax, pattern: INVITE_TOKEN_PATTERN },
-    issues,
-  );
+  const credential = parseCredential(value, issues);
   const idempotencyKey = requiredString(
     value,
     'idempotencyKey',
@@ -261,7 +294,7 @@ export const parseSubmitRequest = (value: unknown): ParseResult<SubmitRequest> =
 
   if (
     issues.length > 0 ||
-    inviteToken === undefined ||
+    credential === undefined ||
     idempotencyKey === undefined ||
     revision === undefined ||
     attending === undefined ||
@@ -271,7 +304,7 @@ export const parseSubmitRequest = (value: unknown): ParseResult<SubmitRequest> =
   }
 
   const parsed: SubmitRequest = {
-    inviteToken,
+    ...credential,
     idempotencyKey,
     revision,
     attending,

@@ -9,3 +9,4 @@ coverage/
 .dev.vars*
 !.dev.vars.example
 rsvp/worker/wrangler.test.local.toml
+rsvp/worker/wrangler.production.local.toml

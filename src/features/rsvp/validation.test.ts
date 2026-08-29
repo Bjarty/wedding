@@ -18,6 +18,8 @@ const household: ResolvedHousehold = {
     { guestId: 'guest_2', displayName: 'Bjarty' },
   ],
   currentRsvp: null,
+  invitationVariant: 'day',
+  mealChoiceRequired: true,
 };
 
 test('een nieuw huishouden begint zonder vooraf gekozen antwoorden', () => {
@@ -64,6 +66,23 @@ test('afwezigen worden zonder maaltijd verstuurd', () => {
   ]);
   assert.equal(normalizeOptionalText(draft.email), 'gast@example.nl');
   assert.equal(normalizeOptionalText(draft.message), 'Tot dan!');
+});
+
+test('een avondvariant vereist en verstuurt geen maaltijdkeuze', () => {
+  const draft: RsvpDraft = {
+    guests: [
+      { guestId: 'guest_1', attending: true, mealChoice: null },
+      { guestId: 'guest_2', attending: false, mealChoice: null },
+    ],
+    email: '',
+    message: '',
+  };
+
+  assert.equal(hasDraftErrors(validateDraft(draft, false)), false);
+  assert.deepEqual(toGuestSubmissions(draft, false), [
+    { guestId: 'guest_1', attending: true },
+    { guestId: 'guest_2', attending: false },
+  ]);
 });
 
 test('een ongeldig optioneel e-mailadres wordt gemarkeerd', () => {

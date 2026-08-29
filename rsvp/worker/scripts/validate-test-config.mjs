@@ -2,6 +2,7 @@ import { readFile } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
 
 const EXPECTED_SECRETS = [
+  'ACCESS_CODE_HASH_SECRET',
   'INVITATION_TOKEN_HASH_SECRET',
   'TURNSTILE_SECRET',
   'WRITER_HMAC_SECRET',
@@ -9,6 +10,8 @@ const EXPECTED_SECRETS = [
 ];
 
 const TEMPLATE_NAMESPACE_IDS = new Map([
+  ['GLOBAL_RATE_LIMITER', 'REPLACE_WITH_UNUSED_POSITIVE_INTEGER_GLOBAL'],
+  ['CLIENT_RATE_LIMITER', 'REPLACE_WITH_UNUSED_POSITIVE_INTEGER_CLIENT'],
   ['RESOLVE_RATE_LIMITER', 'REPLACE_WITH_UNUSED_POSITIVE_INTEGER_RESOLVE'],
   ['SUBMIT_RATE_LIMITER', 'REPLACE_WITH_UNUSED_POSITIVE_INTEGER_SUBMIT'],
 ]);
@@ -21,6 +24,7 @@ const EXPECTED_STRUCTURE = [
   'preview_urls = true',
   '[vars]',
   'ALLOWED_ORIGIN = "http://localhost:3000"',
+  'HOUSEHOLD_CODES_ENABLED = "true"',
   'TURNSTILE_EXPECTED_HOSTNAME = "localhost"',
   'TURNSTILE_EXPECTED_ACTION = "test"',
   '[secrets]',
@@ -29,7 +33,16 @@ const EXPECTED_STRUCTURE = [
   '"WRITER_URL",',
   '"WRITER_HMAC_SECRET",',
   '"INVITATION_TOKEN_HASH_SECRET",',
+  '"ACCESS_CODE_HASH_SECRET",',
   ']',
+  '[[ratelimits]]',
+  'name = "GLOBAL_RATE_LIMITER"',
+  'namespace_id = "<ACCOUNT_REVIEWED_ID>"',
+  'simple = { limit = 300, period = 60 }',
+  '[[ratelimits]]',
+  'name = "CLIENT_RATE_LIMITER"',
+  'namespace_id = "<ACCOUNT_REVIEWED_ID>"',
+  'simple = { limit = 30, period = 60 }',
   '[[ratelimits]]',
   'name = "RESOLVE_RATE_LIMITER"',
   'namespace_id = "<ACCOUNT_REVIEWED_ID>"',
@@ -105,7 +118,7 @@ export const validateTestConfig = (source, { template = false } = {}) => {
   if (/^\s*(?:account_id|route|routes|custom_domain)\s*=/m.test(source)) {
     throw new Error('test config must not contain an account ID, route, or custom domain');
   }
-  if (/^\s*(?:TURNSTILE_SECRET|WRITER_URL|WRITER_HMAC_SECRET|INVITATION_TOKEN_HASH_SECRET)\s*=/m.test(source)) {
+  if (/^\s*(?:TURNSTILE_SECRET|WRITER_URL|WRITER_HMAC_SECRET|INVITATION_TOKEN_HASH_SECRET|ACCESS_CODE_HASH_SECRET)\s*=/m.test(source)) {
     throw new Error('secret values must not be assigned in Wrangler config');
   }
   if (/lisetteenbjarty\.nl|script\.google\.com\/macros\//i.test(source)) {
@@ -122,6 +135,11 @@ export const validateTestConfig = (source, { template = false } = {}) => {
   assertExact(readBooleanAssignment(topLevel, 'preview_urls'), true, 'preview_urls');
   assertExact(readStringAssignment(publicVars, 'ALLOWED_ORIGIN'), 'http://localhost:3000', 'ALLOWED_ORIGIN');
   assertExact(
+    readStringAssignment(publicVars, 'HOUSEHOLD_CODES_ENABLED'),
+    'true',
+    'HOUSEHOLD_CODES_ENABLED',
+  );
+  assertExact(
     readStringAssignment(publicVars, 'TURNSTILE_EXPECTED_HOSTNAME'),
     'localhost',
     'TURNSTILE_EXPECTED_HOSTNAME',
@@ -134,14 +152,16 @@ export const validateTestConfig = (source, { template = false } = {}) => {
 
   const secrets = readRequiredSecrets(source);
   if (JSON.stringify(secrets) !== JSON.stringify(EXPECTED_SECRETS)) {
-    throw new Error('secrets.required must contain exactly the four RSVP test secrets');
+    throw new Error('secrets.required must contain exactly the five RSVP test secrets');
   }
 
   const limits = readRateLimits(source);
-  if (limits.length !== 2) throw new Error('exactly two rate-limit bindings are required');
+  if (limits.length !== 4) throw new Error('exactly four rate-limit bindings are required');
 
   const ids = [];
   for (const [name, expectedLimit] of [
+    ['GLOBAL_RATE_LIMITER', 300],
+    ['CLIENT_RATE_LIMITER', 30],
     ['RESOLVE_RATE_LIMITER', 10],
     ['SUBMIT_RATE_LIMITER', 5],
   ]) {

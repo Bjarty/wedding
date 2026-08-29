@@ -2,6 +2,7 @@ import { motion } from 'motion/react';
 import { CalendarClock, Mail } from 'lucide-react';
 import { useLayoutEffect, useState } from 'react';
 import { siteContent } from '../content/siteContent';
+import { invitationDemoServices } from '../features/rsvp/demoRsvp';
 import RsvpExperience from '../features/rsvp/RsvpExperience';
 import { getRsvpConfig } from '../features/rsvp/config';
 import {
@@ -9,11 +10,23 @@ import {
   removeInviteFragment,
   shouldRemoveInviteFragment,
 } from '../features/rsvp/inviteToken';
+import HouseholdCodeEntry from './HouseholdCodeEntry';
 
 const rsvpConfig = getRsvpConfig();
+const invitationDemoConfig = {
+  apiBaseUrl: 'https://local-demo.invalid',
+  turnstileSiteKey: 'local-demo',
+  householdCodesEnabled: true,
+};
 
 export default function RSVPForm() {
   const { contacts, rsvp } = siteContent;
+  const isLocalInvitationDemo =
+    import.meta.env.DEV &&
+    typeof window !== 'undefined' &&
+    new URLSearchParams(window.location.search).get('demo') === 'invitation';
+  const [demoCredential, setDemoCredential] = useState<string | null>(null);
+  const [householdCode, setHouseholdCode] = useState<string | null>(null);
   const [{ inviteToken, shouldRemoveFragment }] = useState(() => {
     if (typeof window === 'undefined') return { inviteToken: null, shouldRemoveFragment: false };
     return {
@@ -46,7 +59,44 @@ export default function RSVPForm() {
           </p>
         </div>
 
-        {rsvpConfig === null ? (
+        {isLocalInvitationDemo ? (
+          <div>
+            <div className="mx-auto mb-6 max-w-2xl rounded-2xl border border-amber-200 bg-amber-50 px-5 py-4 text-sm leading-relaxed text-amber-950" role="note">
+              <p className="font-bold">Lokale demonstratie</p>
+              <p className="mt-1">
+                De Familie Garcia-code werkt alleen op deze computer. Testreacties blijven tijdelijk in dit tabblad en gaan niet naar Cloudflare of Google Sheets.
+              </p>
+              <a
+                href="/?preview=invitation"
+                className="mt-3 inline-block font-bold underline decoration-amber-700/50 underline-offset-4 outline-none focus-visible:ring-2 focus-visible:ring-amber-700"
+              >
+                Bekijk de voorbeeld-uitnodiging
+              </a>
+            </div>
+            {demoCredential === null ? (
+              <HouseholdCodeEntry onAccepted={setDemoCredential} />
+            ) : (
+              <>
+                <div className="mx-auto mb-5 flex max-w-3xl justify-end">
+                  <button
+                    type="button"
+                    onClick={() => setDemoCredential(null)}
+                    className="min-h-11 rounded-full border border-cream/25 px-5 py-3 text-xs font-bold uppercase tracking-[0.15em] text-cream outline-none hover:border-gold hover:text-gold focus-visible:ring-4 focus-visible:ring-gold/30"
+                  >
+                    Andere code proberen
+                  </button>
+                </div>
+                <RsvpExperience
+                  autoFocusHeading
+                  config={invitationDemoConfig}
+                  credential={{ type: 'accessCode', value: demoCredential }}
+                  services={invitationDemoServices}
+                  demo
+                />
+              </>
+            )}
+          </div>
+        ) : rsvpConfig === null ? (
           <motion.div
             initial={{ opacity: 0, y: 30 }}
             whileInView={{ opacity: 1, y: 0 }}
@@ -66,8 +116,34 @@ export default function RSVPForm() {
               {rsvp.contactLabel}
             </a>
           </motion.div>
+        ) : inviteToken !== null ? (
+          <RsvpExperience
+            config={rsvpConfig}
+            credential={{ type: 'inviteToken', value: inviteToken }}
+          />
+        ) : rsvpConfig.householdCodesEnabled ? (
+          householdCode === null ? (
+            <HouseholdCodeEntry onAccepted={setHouseholdCode} />
+          ) : (
+            <>
+              <div className="mx-auto mb-5 flex max-w-3xl justify-end">
+                <button
+                  type="button"
+                  onClick={() => setHouseholdCode(null)}
+                  className="min-h-11 rounded-full border border-cream/25 px-5 py-3 text-xs font-bold uppercase tracking-[0.15em] text-cream outline-none hover:border-gold hover:text-gold focus-visible:ring-4 focus-visible:ring-gold/30"
+                >
+                  {rsvp.codeEntry.switchLabel}
+                </button>
+              </div>
+              <RsvpExperience
+                autoFocusHeading
+                config={rsvpConfig}
+                credential={{ type: 'accessCode', value: householdCode }}
+              />
+            </>
+          )
         ) : (
-          <RsvpExperience config={rsvpConfig} inviteToken={inviteToken} />
+          <RsvpExperience config={rsvpConfig} credential={null} />
         )}
       </div>
     </section>

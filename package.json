@@ -9,17 +9,19 @@
     "build": "vite build",
     "typecheck": "tsc --noEmit",
     "validate:content": "tsx scripts/validate-content.ts",
-    "test:rsvp-ui": "tsx --test src/features/rsvp/*.test.ts",
-    "test:rsvp-worker": "tsc -p rsvp/worker/tsconfig.json && node --test rsvp/worker/test/*.test.mjs",
+    "test:rsvp-ui": "tsx --test src/features/rsvp/api.test.ts src/features/rsvp/config.test.ts src/features/rsvp/demoRsvp.test.ts src/features/rsvp/householdCode.test.ts src/features/rsvp/inviteToken.test.ts src/features/rsvp/validation.test.ts",
+    "test:rsvp-worker": "tsc -p rsvp/worker/tsconfig.json && node --test rsvp/worker/test/provision-household-code.test.mjs rsvp/worker/test/test-config.test.mjs rsvp/worker/test/worker.test.mjs",
     "test:rsvp-apps-script": "node rsvp/apps-script/test.mjs",
     "test:rsvp": "npm run test:rsvp-ui && npm run test:rsvp-worker && npm run test:rsvp-apps-script",
     "check": "npm run typecheck && npm run validate:content && npm run test:rsvp",
+    "provision:household-code": "node rsvp/worker/scripts/provision-household-code.mjs",
     "preview": "vite preview",
     "deploy": "gh-pages -d dist"
   },
   "dependencies": {
     "lucide-react": "^0.546.0",
     "motion": "^12.23.24",
+    "qrcode.react": "4.2.0",
     "react": "^19.0.1",
     "react-dom": "^19.0.1"
   },

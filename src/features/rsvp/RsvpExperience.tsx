@@ -21,6 +21,7 @@ import type {
   DraftErrors,
   MealChoice,
   ResolvedHousehold,
+  RsvpCredential,
   RsvpDraft,
   SubmitPayload,
 } from './types';
@@ -40,9 +41,18 @@ interface Notice {
   message: string;
 }
 
+export interface RsvpExperienceServices {
+  resolveHousehold: typeof resolveHousehold;
+  submitRsvp: typeof submitRsvp;
+  requestTurnstileToken: typeof requestTurnstileToken;
+}
+
 interface RsvpExperienceProps {
   config: RsvpConfig;
-  inviteToken: string | null;
+  credential: RsvpCredential | null;
+  autoFocusHeading?: boolean;
+  demo?: boolean;
+  services?: RsvpExperienceServices;
 }
 
 interface PendingSubmission {
@@ -51,6 +61,12 @@ interface PendingSubmission {
 }
 
 const emptyErrors = (): DraftErrors => ({ guestAttendance: {}, guestMeal: {} });
+
+const liveRsvpServices: RsvpExperienceServices = {
+  resolveHousehold,
+  submitRsvp,
+  requestTurnstileToken,
+};
 
 const createIdempotencyKey = (): string => {
   if (typeof crypto.randomUUID === 'function') return crypto.randomUUID();
@@ -129,10 +145,17 @@ const noticeStyles: Record<NoticeKind, string> = {
   conflict: 'border-amber-700/30 bg-amber-50 text-amber-950',
 };
 
-export default function RsvpExperience({ config, inviteToken }: RsvpExperienceProps) {
+export default function RsvpExperience({
+  config,
+  credential,
+  autoFocusHeading = false,
+  demo = false,
+  services,
+}: RsvpExperienceProps) {
   const { contacts, rsvp } = siteContent;
+  const activeServices = services ?? liveRsvpServices;
   const prefersReducedMotion = useReducedMotion();
-  const [loadState, setLoadState] = useState<LoadState>(inviteToken === null ? 'invalid' : 'loading');
+  const [loadState, setLoadState] = useState<LoadState>(credential === null ? 'invalid' : 'loading');
   const [household, setHousehold] = useState<ResolvedHousehold | null>(null);
   const [draft, setDraft] = useState<RsvpDraft | null>(null);
   const [errors, setErrors] = useState<DraftErrors>(emptyErrors);
@@ -144,11 +167,16 @@ export default function RsvpExperience({ config, inviteToken }: RsvpExperiencePr
   const [retryAfterSeconds, setRetryAfterSeconds] = useState(0);
   const turnstileContainerRef = useRef<HTMLDivElement>(null);
   const formRef = useRef<HTMLFormElement>(null);
+  const householdHeadingRef = useRef<HTMLHeadingElement>(null);
   const initialLoadStarted = useRef(false);
   const mounted = useRef(true);
   const runId = useRef(0);
   const operationInProgress = useRef(false);
   const pendingSubmission = useRef<PendingSubmission | null>(null);
+  const mealChoiceRequired = household?.mealChoiceRequired ?? true;
+  const challengeClassName = demo
+    ? 'sr-only'
+    : 'mx-auto mt-4 min-h-16 max-w-sm';
 
   useEffect(() => {
     mounted.current = true;
@@ -162,6 +190,11 @@ export default function RsvpExperience({ config, inviteToken }: RsvpExperiencePr
     const timer = window.setTimeout(() => setRetryAfterSeconds(0), retryAfterSeconds * 1_000);
     return () => window.clearTimeout(timer);
   }, [retryAfterSeconds]);
+
+  useEffect(() => {
+    if (!autoFocusHeading || loadState !== 'ready') return;
+    householdHeadingRef.current?.focus();
+  }, [autoFocusHeading, loadState]);
 
   const applyResolvedHousehold = useCallback((resolved: ResolvedHousehold) => {
     setHousehold(resolved);
@@ -177,7 +210,7 @@ export default function RsvpExperience({ config, inviteToken }: RsvpExperiencePr
 
   const loadHousehold = useCallback(async () => {
     if (operationInProgress.current) return;
-    if (inviteToken === null) {
+    if (credential === null) {
       setLoadState('invalid');
       return;
     }
@@ -211,12 +244,16 @@ export default function RsvpExperience({ config, inviteToken }: RsvpExperiencePr
     if (household === null) setLoadState('loading');
 
     try {
-      const turnstileToken = await requestTurnstileToken(
+      const turnstileToken = await activeServices.requestTurnstileToken(
         container,
         config.turnstileSiteKey,
         'rsvp_resolve',
       );
-      const resolved = await resolveHousehold(config.apiBaseUrl, inviteToken, turnstileToken);
+      const resolved = await activeServices.resolveHousehold(
+        config.apiBaseUrl,
+        credential,
+        turnstileToken,
+      );
       if (!mounted.current || currentRun !== runId.current) return;
       applyResolvedHousehold(resolved);
       pendingSubmission.current = null;
@@ -256,13 +293,13 @@ export default function RsvpExperience({ config, inviteToken }: RsvpExperiencePr
       operationInProgress.current = false;
       if (mounted.current && currentRun === runId.current) setBusy(null);
     }
-  }, [applyResolvedHousehold, config, household, inviteToken, notice?.kind, rsvp.states]);
+  }, [activeServices, applyResolvedHousehold, config, credential, household, notice?.kind, rsvp.states]);
 
   useEffect(() => {
-    if (initialLoadStarted.current || inviteToken === null) return;
+    if (initialLoadStarted.current || credential === null) return;
     initialLoadStarted.current = true;
     void loadHousehold();
-  }, [inviteToken, loadHousehold]);
+  }, [credential, loadHousehold]);
 
   const updateGuestAttendance = (guestId: string, attending: boolean) => {
     setDraft((current) => {
@@ -311,14 +348,14 @@ export default function RsvpExperience({ config, inviteToken }: RsvpExperiencePr
     event.preventDefault();
     if (
       draft === null ||
-      inviteToken === null ||
+      credential === null ||
       busy !== null ||
       operationInProgress.current ||
       retryAfterSeconds > 0 ||
       notice?.kind === 'conflict'
     ) return;
 
-    const nextErrors = validateDraft(draft);
+    const nextErrors = validateDraft(draft, mealChoiceRequired);
     setErrors(nextErrors);
     if (hasDraftErrors(nextErrors)) {
       setNotice({ kind: 'validation', message: rsvp.states.validationError });
@@ -336,7 +373,7 @@ export default function RsvpExperience({ config, inviteToken }: RsvpExperiencePr
       return;
     }
 
-    const guests = toGuestSubmissions(draft);
+    const guests = toGuestSubmissions(draft, mealChoiceRequired);
     const email = normalizeOptionalText(draft.email);
     const message = normalizeOptionalText(draft.message);
     const submission = {
@@ -356,24 +393,29 @@ export default function RsvpExperience({ config, inviteToken }: RsvpExperiencePr
     setBusy('submit');
     setNotice(null);
     try {
-      const turnstileToken = await requestTurnstileToken(
+      const turnstileToken = await activeServices.requestTurnstileToken(
         container,
         config.turnstileSiteKey,
         'rsvp_submit',
       );
       const payload: SubmitPayload = {
-        inviteToken,
+        credential,
         idempotencyKey: pendingSubmission.current.idempotencyKey,
         ...submission,
         turnstileToken,
       };
-      const result = await submitRsvp(config.apiBaseUrl, payload);
+      const result = await activeServices.submitRsvp(config.apiBaseUrl, payload);
       if (!mounted.current || currentRun !== runId.current) return;
 
       setRevision(result.revision);
       setReceiptNumber(result.receiptNumber);
       setHasSavedRsvp(true);
-      setNotice({ kind: 'success', message: rsvp.states.success });
+      setNotice({
+        kind: 'success',
+        message: demo
+          ? 'De testreactie is tijdelijk in dit tabblad opgeslagen en niet naar de Google Sheet verstuurd.'
+          : rsvp.states.success,
+      });
       setRetryAfterSeconds(0);
       pendingSubmission.current = null;
     } catch (error) {
@@ -413,17 +455,24 @@ export default function RsvpExperience({ config, inviteToken }: RsvpExperiencePr
     return (
       <>
         <StatusPanel message={rsvp.states.loading} loading />
-        <div ref={turnstileContainerRef} className="mx-auto mt-4 min-h-16 max-w-sm" aria-label="Beveiligingscontrole" />
+        <div ref={turnstileContainerRef} className={challengeClassName} aria-label="Beveiligingscontrole" />
       </>
     );
   }
-  if (loadState === 'invalid') return <StatusPanel message={rsvp.states.invalidLink} showContact />;
+  if (loadState === 'invalid') {
+    return (
+      <StatusPanel
+        message={credential?.type === 'accessCode' ? rsvp.states.invalidCode : rsvp.states.invalidLink}
+        showContact
+      />
+    );
+  }
   if (loadState === 'closed') return <StatusPanel message={rsvp.states.closed} showContact />;
   if (loadState === 'offline') {
     return (
       <>
         <StatusPanel message={rsvp.states.offline} retry={() => void loadHousehold()} />
-        <div ref={turnstileContainerRef} className="mx-auto mt-4 min-h-16 max-w-sm" aria-label="Beveiligingscontrole" />
+        <div ref={turnstileContainerRef} className={challengeClassName} aria-label="Beveiligingscontrole" />
       </>
     );
   }
@@ -435,7 +484,7 @@ export default function RsvpExperience({ config, inviteToken }: RsvpExperiencePr
           retry={() => void loadHousehold()}
           retryDelaySeconds={retryAfterSeconds}
         />
-        <div ref={turnstileContainerRef} className="mx-auto mt-4 min-h-16 max-w-sm" aria-label="Beveiligingscontrole" />
+        <div ref={turnstileContainerRef} className={challengeClassName} aria-label="Beveiligingscontrole" />
       </>
     );
   }
@@ -443,7 +492,7 @@ export default function RsvpExperience({ config, inviteToken }: RsvpExperiencePr
     return (
       <>
         <StatusPanel message={rsvp.states.loadError} retry={() => void loadHousehold()} showContact />
-        <div ref={turnstileContainerRef} className="mx-auto mt-4 min-h-16 max-w-sm" aria-label="Beveiligingscontrole" />
+        <div ref={turnstileContainerRef} className={challengeClassName} aria-label="Beveiligingscontrole" />
       </>
     );
   }
@@ -461,7 +510,23 @@ export default function RsvpExperience({ config, inviteToken }: RsvpExperiencePr
         <p className="text-xs font-bold uppercase tracking-[0.18em] text-stone-dark/60">
           {rsvp.form.invitationHeading}
         </p>
-        <h3 className="mt-3 text-3xl font-serif md:text-4xl">{household.displayName}</h3>
+        <h3
+          ref={householdHeadingRef}
+          tabIndex={autoFocusHeading ? -1 : undefined}
+          className="mt-3 text-3xl font-serif outline-none md:text-4xl"
+        >
+          {household.displayName}
+        </h3>
+        <p className="mx-auto mt-4 w-fit rounded-full border border-[#8A5A03]/30 bg-gold/10 px-4 py-2 text-xs font-bold uppercase tracking-[0.14em] text-stone-dark/70">
+          {household.invitationVariant === 'day'
+            ? rsvp.form.dayVariantLabel
+            : rsvp.form.eveningVariantLabel}
+        </p>
+        <p className="mt-3 text-sm font-semibold text-stone-dark/70">
+          {household.invitationVariant === 'day'
+            ? rsvp.form.dayArrivalMessage
+            : rsvp.form.eveningArrivalMessage}
+        </p>
         <ul className="mt-4 flex flex-wrap justify-center gap-2" aria-label="Genodigden">
           {household.guests.map((guest) => (
             <li key={guest.guestId} className="rounded-full border border-gold/30 bg-white/50 px-4 py-2 text-sm">
@@ -562,7 +627,7 @@ export default function RsvpExperience({ config, inviteToken }: RsvpExperiencePr
                   )}
                 </fieldset>
 
-                {answer.attending === true && (
+                {answer.attending === true && mealChoiceRequired && (
                   <fieldset className="mt-6 border-t border-stone-dark/10 pt-6">
                     <legend className="px-1 text-base font-semibold">
                       {rsvp.form.mealQuestionPrefix} {guest.displayName}
@@ -680,13 +745,19 @@ export default function RsvpExperience({ config, inviteToken }: RsvpExperiencePr
             <p className="mt-2 break-all font-mono text-lg font-bold" aria-live="polite">
               {receiptNumber}
             </p>
-            <p className="mt-2 text-sm leading-relaxed text-stone-dark/65">{rsvp.states.receiptHelper}</p>
+            <p className="mt-2 text-sm leading-relaxed text-stone-dark/65">
+              {demo
+                ? 'Dit ontvangstnummer is alleen onderdeel van de lokale demonstratie.'
+                : rsvp.states.receiptHelper}
+            </p>
           </div>
         )}
 
         <div
           ref={turnstileContainerRef}
-          className={`mx-auto flex max-w-sm justify-center ${busy === null ? 'min-h-0' : 'min-h-16'}`}
+          className={demo
+            ? 'sr-only'
+            : `mx-auto flex max-w-sm justify-center ${busy === null ? 'min-h-0' : 'min-h-16'}`}
           aria-label="Beveiligingscontrole"
         />
 

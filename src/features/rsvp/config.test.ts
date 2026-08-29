@@ -6,6 +6,7 @@ const configuredEnvironment = {
   VITE_RSVP_ENABLED: 'true',
   VITE_RSVP_API_BASE_URL: 'https://rsvp-api.example.test/',
   VITE_TURNSTILE_SITE_KEY: 'test-site-key',
+  VITE_RSVP_HOUSEHOLD_CODES_ENABLED: 'true',
 } as const;
 
 test('activeert RSVP alleen met de expliciete true-vlag en beide publieke waarden', () => {
@@ -15,6 +16,7 @@ test('activeert RSVP alleen met de expliciete true-vlag en beide publieke waarde
   assert.deepEqual(parseRsvpConfig(configuredEnvironment), {
     apiBaseUrl: 'https://rsvp-api.example.test',
     turnstileSiteKey: 'test-site-key',
+    householdCodesEnabled: true,
   });
 });
 
@@ -27,10 +29,25 @@ test('staat onversleuteld HTTP alleen toe voor lokale ontwikkeling', () => {
   assert.deepEqual(parseRsvpConfig(local), {
     apiBaseUrl: 'http://localhost:8787',
     turnstileSiteKey: 'test-site-key',
+    householdCodesEnabled: true,
   });
   assert.equal(parseRsvpConfig({ ...local, DEV: false }), null);
   assert.equal(
     parseRsvpConfig({ ...local, VITE_RSVP_API_BASE_URL: 'http://example.test' }),
     null,
+  );
+});
+
+test('huishoudcodes staan alleen aan met de expliciete true-vlag', () => {
+  assert.deepEqual(
+    parseRsvpConfig({
+      ...configuredEnvironment,
+      VITE_RSVP_HOUSEHOLD_CODES_ENABLED: 'false',
+    }),
+    {
+      apiBaseUrl: 'https://rsvp-api.example.test',
+      turnstileSiteKey: 'test-site-key',
+      householdCodesEnabled: false,
+    },
   );
 });

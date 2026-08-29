@@ -1,26 +1,29 @@
-# RSVP-foundation
+# RSVP met huishoudcodes
 
-Deze map bereidt versie 1 van de RSVP voor zonder de huidige site, DNS of
-mailafhandeling direct te wijzigen.
+Deze map bevat de fail-closed RSVP-keten. De aanbevolen uitnodigingsstroom
+gebruikt één gedeelde QR en één persoonlijke code per huishouden; bestaande
+persoonlijke fragmentlinks blijven tijdens de overgang ondersteund.
 
 ```text
-persoonlijke link in URL-fragment
-        |
-        v
+gedeelde QR -> #rsvp -> persoonlijke code (alleen in browsergeheugen)
+legacy fragmentlink -----------------------------|
+                                                  v
 GitHub Pages -> Cloudflare Worker -> gesigneerde Apps Script-writer -> private Google Sheet
 ```
 
-De browser spreekt nooit rechtstreeks met Google Apps Script. De ruwe
-uitnodigingstoken staat niet in een queryparameter, wordt niet in
-browseropslag gezet en gaat niet naar Google Sheets. De Worker valideert
-Turnstile, invoer, herhaalde verzendingen en revisies voordat een keyed hash
-van de uitnodiging naar de writer gaat.
+De browser spreekt nooit rechtstreeks met Google Apps Script. Een leesbare
+huishoudcode of ruwe legacy-token staat niet in een queryparameter, permanente
+browseropslag of Google Sheet. De Worker valideert Turnstile, invoer,
+rate-limits, herhaalde verzendingen en revisies en stuurt alleen een keyed hash
+naar de writer.
 
 ## Versie 1
 
-- Eén persoonlijke link per huishouden met vooraf ingestelde namen.
+- Eén gedeelde QR naar `https://lisetteenbjarty.nl/#rsvp`, plus een unieke
+  persoonlijke code per huishouden met vooraf ingestelde namen.
 - Aanwezigheid per persoon.
-- Voor iedere aanwezige persoon één keuze: vis, vlees, vega of vegan.
+- Voor iedere aanwezige daggast één keuze: vis, vlees, vega of vegan;
+  avondgasten krijgen geen maaltijdvraag.
 - Optioneel e-mailadres voor praktische informatie over de bruiloft.
 - Optioneel bericht en bewust geen telefoonnummer.
 - Een stabiel ontvangstnummer na bevestigde opslag.
@@ -32,11 +35,10 @@ Versie 2 kan een bevestiging versturen vanaf
 Google-account als geverifieerd afzenderadres is ingesteld en een end-to-end
 test SPF, DKIM, DMARC, antwoordadres en bezorging heeft gecontroleerd.
 
-Voor de latere verspreiding met één gedeelde QR-code en een persoonlijke code
-per huishouden staat het beveiligings- en UX-ontwerp in
-[`INVITATION-DISTRIBUTION.md`](./INVITATION-DISTRIBUTION.md). Dit document is
-nog geen activatie: de huidige versie blijft persoonlijke fragmentlinks
-gebruiken totdat de aparte migratie is gebouwd en volledig getest.
+De concrete generatie-, Sheet- en distributiewerkwijze staat in
+[`INVITATION-DISTRIBUTION.md`](./INVITATION-DISTRIBUTION.md). De code in Git
+activeert niets vanzelf; zowel backend als Pages blijven achter afzonderlijke
+featureflags staan.
 
 ## Veilige activeringsvolgorde
 
@@ -50,24 +52,30 @@ gebruiken totdat de aparte migratie is gebouwd en volledig getest.
    configuratie staat bewust op `workers_dev = false` en is dus niet direct
    bereikbaar. Gebruik eigen rate-limit namespace-ID's en andere secrets dan
    in productie.
-4. Test een fictief huishouden volledig: link openen, alle maaltijdkeuzes,
-   afmelding, optionele velden, retry, conflict en ongeldig token. Doe de
+4. Test fictieve dag- én avondhuishoudens volledig via de gedeelde QR en een
+   echte, uitsluitend voor test gegenereerde code: eerste reactie, opnieuw
+   openen met dezelfde code, wijziging, alle maaltijdregels, afmelding,
+   optionele velden, retry, conflict, ingetrokken en ongeldige code. Doe de
    browsertest lokaal vanaf exact `http://localhost:3000` met Cloudflares
    officiële testkeys en uitsluitend de aparte test-Worker, testwriter en
    test-Sheet; wijzig hiervoor geen live Pages-variabelen.
 5. Controleer handmatig dat Sheet en logs geen ruwe tokens, secrets of
    onnodige persoonsgegevens bevatten.
-6. Maak daarna pas afzonderlijke productieresources en zet de drie openbare
+6. Maak daarna pas afzonderlijke productie-Sheet, Apps Script-deployment,
+   Worker, Turnstile-widget, rate-limit namespaces en secrets. Provision de
+   echte huishoudens uitsluitend in die private productie-Sheet.
+7. Zet pas na een geslaagde productiecontrole de vier openbare
    repositoryvariabelen onder **GitHub → Settings → Secrets and variables →
    Actions → Variables**: `VITE_RSVP_ENABLED=true`,
-   `VITE_RSVP_API_BASE_URL` en `VITE_TURNSTILE_SITE_KEY`. De build-job leest
-   geen variabelen die alleen in de `github-pages`-environment staan.
-7. Bouw en beoordeel de productie-artifact voordat de configuratiewijziging
+   `VITE_RSVP_HOUSEHOLD_CODES_ENABLED=true`, `VITE_RSVP_API_BASE_URL` en
+   `VITE_TURNSTILE_SITE_KEY`. De build-job leest geen variabelen die alleen in
+   de `github-pages`-environment staan.
+8. Bouw en beoordeel de productie-artifact voordat de configuratiewijziging
    naar `main` gaat.
 
-Zonder de expliciete waarde `VITE_RSVP_ENABLED=true` én beide openbare
-frontendvariabelen blijft de huidige melding “RSVP opent binnenkort”
-zichtbaar. `VITE_RSVP_ENABLED=false` is uitsluitend een UI-/presentatiestop;
+Zonder `VITE_RSVP_ENABLED=true` én beide endpointwaarden blijft “RSVP opent
+binnenkort” zichtbaar. Zonder `VITE_RSVP_HOUSEHOLD_CODES_ENABLED=true` blijft
+de code-invoer verborgen. Beide zijn uitsluitend UI-/presentatiestops;
 een bestaande client kan de Workerroute nog steeds rechtstreeks aanroepen.
 Voor een echte write-stop volg je eerst het
 [Apps Script-runbook](./apps-script/README.md#backend-stop-en-rollback): zet

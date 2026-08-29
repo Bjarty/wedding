@@ -16,8 +16,9 @@ toegangsinstelling. Test en productie worden bewust handmatig ingericht.
   Google-eigenaaraccount. Het adres daarvan blijft buiten Git.
 - Beide Sheets houden **Algemene toegang: Beperkt** en worden niet publiek
   gedeeld.
-- Alleen token hashes komen in Sheets en server-to-server requests. Ruwe
-  uitnodigingstokens worden niet naar Apps Script gestuurd.
+- Alleen keyed credential-hashes komen in Sheets en server-to-server requests.
+  Ruwe uitnodigingstokens en persoonlijke codes worden niet naar Apps Script
+  gestuurd.
 - Vooraf ingestelde `guestId`-waarden en namen komen uit de private Sheet;
   submit accepteert nooit een naam vanuit de browser.
 - E-mail en bericht zijn optioneel. V1 verstuurt geen e-mail. De manifest
@@ -27,9 +28,9 @@ toegangsinstelling. Test en productie worden bewust handmatig ingericht.
   RSVP-detaildata/PII: niet exporteren, niet loggen en alleen toegankelijk
   maken voor dezelfde beperkte Sheet-beheerders.
 - Er is geen telefoonveld en geen vrij tekstveld voor aanvullende
-  dieetwensen; de afgesproken `mealChoice` blijft wel verplicht bij
-  aanwezigheid. Onbekende velden worden geweigerd.
-- Execution logs en `Audit` bevatten geen token(hash), naam, e-mailadres,
+  dieetwensen; `mealChoice` is alleen voor aanwezige daggasten verplicht en
+  blijft voor avondgasten leeg. Onbekende velden worden geweigerd.
+- Execution logs en `Audit` bevatten geen credential(hash), naam, e-mailadres,
   bericht of maaltijdkeuze.
 
 Apps Script stelt custom requestheaders niet betrouwbaar beschikbaar aan
@@ -46,7 +47,7 @@ stopt bij afwijkende bestaande headers.
 
 | Tab | Doel | Kolommen |
 | --- | --- | --- |
-| `Invitations` | Huishouden, token hash en revisie | `householdId`, `tokenHash`, `displayName`, `maxGuests`, `active`, `currentRevision`, `createdAt`, `updatedAt` |
+| `Invitations` | Huishouden, credential-hashes, uitnodigingsbeleid en revisie | `householdId`, `tokenHash`, `accessCodeHash`, `displayName`, `invitationVariant`, `mealChoiceRequired`, `maxGuests`, `active`, `currentRevision`, `createdAt`, `updatedAt` |
 | `Responses` | Actuele reactie en vast ontvangstnummer | `responseId`, `receiptNumber`, `householdId`, `revision`, `attending`, `guestCount`, `email`, `message`, `submittedAt`, `updatedAt` |
 | `GuestDetails` | Vooraf ingestelde personen en actuele keuze | `householdId`, `guestId`, `displayName`, `attending`, `mealChoice`, `revision`, `updatedAt` |
 | `Idempotency` | Veilige retries, write-ahead intents en replaycontrole | `requestId`, `operation`, `idempotencyKey`, `payloadHash`, `householdId`, `baseRevision`, `targetRevision`, `status`, `intentJson`, `intentMac`, `responseJson`, `completionMac`, `requestTimestamp`, `createdAt`, `updatedAt`, `expiresAt` |
@@ -56,6 +57,13 @@ Provisioning vult per huishouden één `Invitations`-rij en één of meer
 `GuestDetails`-rijen. Gebruik URL-veilige, niet-voorspelbare IDs van maximaal
 64 tekens. Vul de initiële waarden exact zo in:
 
+- Vul voor een oude persoonlijke fragmentlink alleen `tokenHash` in en voor
+  een persoonlijke huishoudcode alleen `accessCodeHash`. Tijdens een
+  gecontroleerde overgang mogen beide hashes op dezelfde rij staan. Minstens
+  één hash is verplicht; iedere ingevulde hash heeft exact 43 base64url-tekens.
+- `invitationVariant` is exact `day` of `evening`. In deze versie is het
+  bijbehorende beleid onveranderlijk: `day` vereist de echte boolean `TRUE`
+  voor `mealChoiceRequired`; `evening` vereist `FALSE`.
 - `Invitations.active` is een echte boolean, `currentRevision` is het getal
   `0`, en `createdAt` én `updatedAt` zijn geldige datums of canonical
   ISO-8601-tijdstippen (bijvoorbeeld `2026-08-29T12:00:00.000Z`).
@@ -66,10 +74,11 @@ Provisioning vult per huishouden één `Invitations`-rij en één of meer
 Een lege of ongeldige Invitation-`updatedAt`, vooraf ingevulde gastkeuze of
 afwijkende basisrevision faalt gesloten voordat RSVP-data wordt gewijzigd.
 
-Per aanwezige gast is `mealChoice` verplicht met exact één van `fish`, `meat`,
-`vegetarian`, `vegan`. Bij een afwezige gast blijft `mealChoice` leeg. Submit
-moet alle vooraf ingestelde `guestId`-waarden exact één keer bevatten en mag
-geen andere IDs toevoegen.
+Bij `day`/`mealChoiceRequired=TRUE` is per aanwezige gast `mealChoice`
+verplicht met exact één van `fish`, `meat`, `vegetarian`, `vegan`. Bij
+`evening`/`FALSE` blijft `mealChoice` ook voor aanwezige gasten leeg. Bij een
+afwezige gast is de waarde altijd leeg. Submit moet alle vooraf ingestelde
+`guestId`-waarden exact één keer bevatten en mag geen andere IDs toevoegen.
 
 `maxGuests` begrenst het aantal personen dat tegelijk aanwezig kan zijn. De
 expliciete provisioning-invariant is `aantal GuestDetails-rijen <= maxGuests`:
@@ -84,16 +93,40 @@ Sheets consumeert precies die prefix; `getValues()` levert daarna de originele
 logische tekst terug en `getFormulas()` moet leeg blijven. De tekstnotatie
 beschermt ook namen die tijdens provisioning worden ingevoerd.
 
-### Schemawijziging van een eerdere foundation
+### Veilige migratie van de legacy Invitations-header
 
-De uitgebreide `Idempotency`-header is bewust niet in-place compatibel met
-een eerdere, nog niet geactiveerde foundation. Gebruik voor test en productie
-bij voorkeur een nieuwe private Sheet en voer `initSheet()` uit. Als er toch
-al echte RSVP-data in een Sheet staat: zet eerst de Worker uit, maak een
-afgeschermde backup en stop; wijzig of verplaats kolommen niet handmatig. Een
-oude idempotencyrij heeft geen geldige intent-/completion-MAC en mag niet als
-afgeronde write worden vertrouwd. Migreer zo'n Sheet alleen met een afzonderlijk
-beoordeeld migratiescript en heractiveer pas na de volledige testmatrix.
+Gebruik voor test en productie bij voorkeur een nieuwe private Sheet en voer
+`initSheet()` uit. De meegeleverde beheerfunctie
+`migrateInvitationSchemaV1ToV2()` is alleen bedoeld voor een Sheet met de
+exacte acht legacy `Invitations`-kolommen en de huidige exacte headers op de
+andere vier tabs. Zij:
+
+1. neemt de globale `ScriptLock`;
+2. controleert eigenaar, omgeving en alle headers;
+3. weigert zonder enige schemawijziging zodra een `submit`-intent de status
+   `pending` heeft;
+4. valideert alle legacy Invitation-rijen en duplicaten vóór de eerste write;
+5. behoudt iedere cel, voegt een lege `accessCodeHash` toe en zet het historisch
+   correcte beleid `day` plus `mealChoiceRequired=TRUE`;
+6. schrijft en controleert daarna de exacte v2-header.
+
+De functie is idempotent: op een al geldig v2-schema retourneert zij
+`migrated: false` en verandert zij niets. Zij genereert geen codes en wijzigt
+geen Responses, GuestDetails, Idempotency of Audit. Voer haar nooit blind uit:
+
+1. zet nieuwe Worker-writes backend-side stil;
+2. maak een afgeschermde backup;
+3. inspecteer en herstel iedere pending intent;
+4. voer de migratiefunctie één keer handmatig uit en controleer resultaat,
+   headers, rijenaantallen, revisions en ontvangstnummers;
+5. provision daarna pas access-codehashes en voer de volledige testmatrix uit.
+
+Een legacy pending intent dat vóór de upgrade al duurzaam was vastgelegd kan
+na de migratie nog veilig worden hersteld. Zo'n intent heeft nog geen expliciet
+policy-object en wordt uitsluitend geïnterpreteerd als het toen geldende
+`day`/maaltijd-verplichtbeleid. Nieuwe intents bevatten variant en maaltijdregel
+in de geauthenticeerde `intentJson`; herstel stopt als de private Invitation-rij
+later handmatig naar een ander beleid is veranderd.
 
 ## Duurzame writes en herstel
 
@@ -123,7 +156,7 @@ Een gemengde maar herkenbare basis-/doelstaat wordt deterministisch afgemaakt.
 Een onbekende waarde, ongeldige MAC, dubbele/conflicterende Audit of revision
 nieuwer dan het intentdoel faalt gesloten zonder terugrollen. Er kan maximaal
 één pending intent per huishouden bestaan. Resolve en submit herstellen alleen
-het huishouden van de aangeboden tokenhash, zodat een beschadigd ander
+het huishouden van de aangeboden credential-hash, zodat een beschadigd ander
 huishouden geen globale storing veroorzaakt. Een intent die al vóór sluiting
 duurzaam was geaccepteerd wordt ook na sluiting of deactivatie afgemaakt, maar
 alleen vóór de harde retentiedeadline; een nieuwe submit blijft geblokkeerd.
@@ -135,7 +168,7 @@ test na foutinjectie en in productie alleen na inspectie van de private Sheet;
 een fout betekent stoppen en onderzoeken, niet rijen handmatig op completed
 zetten.
 
-## Token hashes en secrets
+## Credential-hashes en secrets
 
 Maak uitnodigingstokens met minimaal 32 cryptografisch willekeurige bytes. De
 Worker en het provisioningproces berekenen exact:
@@ -150,6 +183,13 @@ De uitkomst is 43 URL-veilige tekens en komt in `Invitations.tokenHash`.
 `INVITATION_TOKEN_HASH_SECRET` staat alleen in de Worker secret store en het
 beveiligde provisioningproces; niet in Apps Script of Git. Gebruik een ander
 secret dan `WRITER_HMAC_SECRET`.
+
+Persoonlijke huishoudcodes gebruiken dezelfde HMAC-constructie na de exact
+gedocumenteerde code-normalisatie, maar met een afzonderlijk
+`ACCESS_CODE_HASH_SECRET`; de uitkomst komt in `Invitations.accessCodeHash`.
+Apps Script kent geen van beide hashsecrets en ontvangt uitsluitend de hash.
+Zet een leesbare code nooit in de Sheet, Script Properties, een requestlog of
+een URL. De Worker stuurt bij resolve en submit exact één hashsoort mee.
 
 Open in Apps Script **Projectinstellingen -> Script Properties**:
 
@@ -211,11 +251,19 @@ plus verhoging veilig tegen gelijktijdige writes.
 
 ### Resolve
 
-Data bevat exact:
+Data bevat exact één van deze twee vormen:
 
 ```json
 { "tokenHash": "43-base64url-tekens" }
 ```
+
+```json
+{ "accessCodeHash": "43-base64url-tekens" }
+```
+
+Geen hash, beide hashes tegelijk of een extra veld wordt geweigerd. Een
+onbekende, ingetrokken of verkeerd gekozen credential levert dezelfde veilige
+`INVITATION_INVALID`-categorie op.
 
 Succes bevat exact de volgende vorm:
 
@@ -227,6 +275,8 @@ Succes bevat exact de volgende vorm:
   "data": {
     "householdId": "hh_voorbeeld",
     "displayName": "Familie Voorbeeld",
+    "invitationVariant": "day",
+    "mealChoiceRequired": true,
     "maxGuests": 2,
     "guests": [
       { "guestId": "guest_1", "displayName": "Gast Eén" }
@@ -238,12 +288,14 @@ Succes bevat exact de volgende vorm:
 
 Na een eerdere reactie bevat `currentRsvp` exact revision, het stabiele
 `receiptNumber`, top-level `attending`, alle gasten met `guestId`, `attending`
-en alleen bij aanwezigheid `mealChoice`, optioneel `email`/`message`, en
-`updatedAt` als ISO-tijdstip.
+en alleen wanneer het opgeslagen maaltijdbeleid dit vereist `mealChoice`,
+optioneel `email`/`message`, en `updatedAt` als ISO-tijdstip.
 
 ### Submit
 
-Data bevat exact de volgende velden; `email` en `message` zijn optioneel:
+Data bevat exact de volgende velden; `email` en `message` zijn optioneel en
+`tokenHash` mag uitsluitend één-op-één worden vervangen door
+`accessCodeHash`:
 
 ```json
 {
@@ -263,6 +315,9 @@ Data bevat exact de volgende velden; `email` en `message` zijn optioneel:
 `revision` is de verwachte huidige revision. De eerste submit stuurt `0`; een
 geldige write vergelijkt die waarde onder `ScriptLock` en slaat revision `1`
 op. Top-level `attending` moet gelijk zijn aan “minstens één gast aanwezig”.
+De browser stuurt geen variant of maaltijdregel. De writer haalt die opnieuw
+uit de private Invitation-rij en weigert een ontbrekende dagmaaltijd of een
+aanwezige avondmaaltijd voordat een intent wordt geschreven.
 
 Succes bevat:
 
@@ -316,10 +371,11 @@ Richt eerst test volledig in en herhaal de stappen pas daarna voor productie:
    Sheet of deployment in productie.
 5. Voer `initSheet()` handmatig uit, autoriseer alleen de gevraagde scopes en
    controleer de vijf tabs en headers.
-6. Provision testhuishoudens en gasten. Sla alleen de keyed token hash op;
-   nooit de ruwe token. Controleer dat ieder huishouden hooguit `maxGuests`
-   vooraf ingestelde `GuestDetails`-rijen heeft en voer voor iedere link een
-   geldige resolve uit voordat je hem verspreidt.
+6. Provision testhuishoudens en gasten. Sla alleen de juiste keyed hash op;
+   nooit de ruwe token of huishoudcode. Vul variant en booleanbeleid exact in,
+   controleer dat ieder huishouden hooguit `maxGuests` vooraf ingestelde
+   `GuestDetails`-rijen heeft en voer voor iedere credential een geldige resolve
+   uit voordat je hem verspreidt.
 7. Kies **Implementeren -> Nieuwe implementatie -> Web-app**, uitvoeren als
    **ikzelf**, toegang **iedereen**. De Sheet zelf blijft Beperkt.
 8. Bewaar de `/exec`-URL alleen in de overeenkomstige Worker-secret/config.
@@ -419,8 +475,10 @@ niet opnieuw als productiebron in.
 
 ## Verplichte testmatrix
 
-1. Geldige resolve geeft alleen het juiste huishouden en vooraf ingestelde
-   gastnamen terug; een ongeldige/inactieve hash geeft `INVITATION_INVALID`.
+1. Geldige resolve via zowel `tokenHash` als `accessCodeHash` geeft alleen het
+   juiste huishouden, variant, maaltijdbeleid en vooraf ingestelde gastnamen
+   terug; geen/beide hashes of een ongeldige/inactieve hash geeft
+   `INVITATION_INVALID`.
    Een huishouden met meer preset gasten dan `maxGuests` faalt al bij resolve
    als writer-configuratiefout en levert geen RSVP-formulier op. Revision `0`
    faalt ook bij een verdwaalde Response of vooraf ingevulde gastkeuze.
@@ -434,7 +492,8 @@ niet opnieuw als productiebron in.
    timestamp en hergebruikt requestId worden geweigerd.
 6. Submit met ontbrekende, dubbele of onbekende guestId wordt geweigerd. Namen,
    `phone`, `dietaryRequirements` en andere onbekende velden worden geweigerd.
-7. Aanwezig vereist één geldige mealChoice; afwezig mag geen mealChoice hebben.
+7. Bij `day` vereist aanwezig één geldige mealChoice; bij `evening` is zij ook
+   bij aanwezigheid verboden/leeg. Afwezig mag nooit een mealChoice hebben.
    Top-level attending en aantal aanwezigen moeten kloppen met de gastkeuzes en
    `maxGuests`.
 8. E-mail en bericht werken zowel afwezig als aanwezig. Er wordt geen mail
@@ -446,7 +505,9 @@ niet opnieuw als productiebron in.
     GuestDetails, Audit, Invitation-`updatedAt`, Invitation-revision,
     completionmateriaal en status) en midden in de gastlus. Retry/resolve en
     handmatig herstel leveren exact één revision/receipt/Audit en volledige
-    doelstaat.
+    doelstaat. Bewijs ook dat een nieuw intentbeleid aan de private
+    Invitation-rij is gebonden en dat een legacy intent zonder policy alleen
+    als `day`/maaltijd-verplicht kan herstellen.
 11. Test dezelfde key met gewijzigde payload voor zowel pending als completed,
     een nieuwe key terwijl een intent pending is, recovery na close/inactivatie,
     een exacte en conflicterende bestaande Audit, MAC-tampering, onverwachte
@@ -456,10 +517,13 @@ niet opnieuw als productiebron in.
     request als beheerfunctie wordt geweigerd zonder domeinwrite.
 12. Twee gelijktijdige submits met dezelfde expected revision leveren hooguit
     één revisionverhoging op.
-13. Logs en Audit bevatten geen token(hash), naam, e-mail, bericht of
+13. Logs en Audit bevatten geen credential(hash), naam, e-mail, bericht of
     maaltijdkeuze.
 14. Test de Sheet-clear-preview, verkeerde confirmation (geen wijziging),
     juiste testconfirmation (alle datarijen weg, headers behouden,
     `permanentDeletionCompleted=false`) en de productie-datumblokkade. Oefen
     daarnaast handmatig de volledige file-delete plus permanent verwijderen
     uit Prullenbak met een fictieve test-Sheet.
+15. Test `migrateInvitationSchemaV1ToV2()` met een pending intent (geen enkele
+    wijziging), een geldige legacyrij (alle waarden behouden plus
+    `day`/`TRUE`) en een tweede aanroep (`migrated: false`).

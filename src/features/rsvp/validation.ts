@@ -26,13 +26,16 @@ export const createDraft = (household: ResolvedHousehold): RsvpDraft => {
   };
 };
 
-export const validateDraft = (draft: RsvpDraft): DraftErrors => {
+export const validateDraft = (
+  draft: RsvpDraft,
+  mealChoiceRequired = true,
+): DraftErrors => {
   const errors: DraftErrors = { guestAttendance: {}, guestMeal: {} };
 
   for (const guest of draft.guests) {
     if (guest.attending === null) {
       errors.guestAttendance[guest.guestId] = 'Kies of deze gast erbij is.';
-    } else if (guest.attending && guest.mealChoice === null) {
+    } else if (mealChoiceRequired && guest.attending && guest.mealChoice === null) {
       errors.guestMeal[guest.guestId] = 'Kies een maaltijd.';
     }
   }
@@ -57,10 +60,16 @@ export const hasDraftErrors = (errors: DraftErrors): boolean =>
   errors.email !== undefined ||
   errors.message !== undefined;
 
-export const toGuestSubmissions = (draft: RsvpDraft): GuestSubmission[] =>
+export const toGuestSubmissions = (
+  draft: RsvpDraft,
+  mealChoiceRequired = true,
+): GuestSubmission[] =>
   draft.guests.map((guest) => {
-    if (guest.attending === true && guest.mealChoice !== null) {
+    if (guest.attending === true && mealChoiceRequired && guest.mealChoice !== null) {
       return { guestId: guest.guestId, attending: true, mealChoice: guest.mealChoice };
+    }
+    if (guest.attending === true && !mealChoiceRequired) {
+      return { guestId: guest.guestId, attending: true };
     }
     return { guestId: guest.guestId, attending: false };
   });

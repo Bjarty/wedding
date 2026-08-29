@@ -15,7 +15,8 @@ import {
   assertEnvironment,
   callWriter,
   enforceRateLimit,
-  hashInvitationToken,
+  hashClientIdentity,
+  hashCredential,
   verifyTurnstile,
 } from './integrations.js';
 import { parseResolveRequest, parseSubmitRequest } from './validation.js';
@@ -174,13 +175,26 @@ export const handleRequest = async (
 
     const mediaType = request.headers.get('content-type')?.split(';', 1)[0]?.trim().toLowerCase();
     if (mediaType !== 'application/json') throw new PublicHttpError(415, 'UNSUPPORTED_MEDIA_TYPE');
+
+    // These two layers run before the body is read or any invitation
+    // credential is parsed. The per-client key is an HMAC, never a raw IP.
+    await enforceRateLimit(env.GLOBAL_RATE_LIMITER, 'rsvp-api-v1');
+    const clientKey = await hashClientIdentity(request, env, dependencies);
+    await enforceRateLimit(env.CLIENT_RATE_LIMITER, clientKey);
+
     const body = await readJsonBody(request);
 
     if (url.pathname === ROUTES.resolve) {
       const parsed = parseResolveRequest(body);
       if (!parsed.ok) throw new PublicHttpError(422, 'VALIDATION_FAILED', { fields: parsed.issues });
-      const tokenHash = await hashInvitationToken(parsed.value.inviteToken, env, dependencies);
-      await enforceRateLimit(env.RESOLVE_RATE_LIMITER, tokenHash);
+      const credential = 'inviteToken' in parsed.value
+        ? { inviteToken: parsed.value.inviteToken }
+        : { accessCode: parsed.value.accessCode };
+      const credentialHash = await hashCredential(credential, env, dependencies);
+      await enforceRateLimit(
+        env.RESOLVE_RATE_LIMITER,
+        'tokenHash' in credentialHash ? credentialHash.tokenHash : credentialHash.accessCodeHash,
+      );
       await verifyTurnstile(
         parsed.value.turnstileToken,
         TURNSTILE_ACTIONS.resolve,
@@ -190,7 +204,7 @@ export const handleRequest = async (
       );
       const result = (await callWriter(
         'resolve',
-        { tokenHash },
+        credentialHash,
         requestId,
         undefined,
         env,
@@ -201,8 +215,14 @@ export const handleRequest = async (
 
     const parsed = parseSubmitRequest(body);
     if (!parsed.ok) throw new PublicHttpError(422, 'VALIDATION_FAILED', { fields: parsed.issues });
-    const tokenHash = await hashInvitationToken(parsed.value.inviteToken, env, dependencies);
-    await enforceRateLimit(env.SUBMIT_RATE_LIMITER, tokenHash);
+    const credential = 'inviteToken' in parsed.value
+      ? { inviteToken: parsed.value.inviteToken }
+      : { accessCode: parsed.value.accessCode };
+    const credentialHash = await hashCredential(credential, env, dependencies);
+    await enforceRateLimit(
+      env.SUBMIT_RATE_LIMITER,
+      'tokenHash' in credentialHash ? credentialHash.tokenHash : credentialHash.accessCodeHash,
+    );
     await verifyTurnstile(
       parsed.value.turnstileToken,
       TURNSTILE_ACTIONS.submit,
@@ -210,8 +230,15 @@ export const handleRequest = async (
       env,
       dependencies,
     );
-    const { turnstileToken: _turnstileToken, inviteToken: _inviteToken, ...submission } = parsed.value;
-    const writerData = { tokenHash, ...submission };
+    const submission = {
+      idempotencyKey: parsed.value.idempotencyKey,
+      revision: parsed.value.revision,
+      attending: parsed.value.attending,
+      guests: parsed.value.guests,
+      ...(parsed.value.email === undefined ? {} : { email: parsed.value.email }),
+      ...(parsed.value.message === undefined ? {} : { message: parsed.value.message }),
+    };
+    const writerData = { ...credentialHash, ...submission };
     const result = (await callWriter(
       'submit',
       writerData,
@@ -238,6 +265,8 @@ export type {
   Env,
   FieldIssue,
   GuestSubmission,
+  InvitationCredential,
+  InvitationVariant,
   MealChoice,
   PublicErrorBody,
   PublicSuccessBody,

@@ -1,6 +1,11 @@
 export const mealChoices = ['fish', 'meat', 'vegetarian', 'vegan'] as const;
 
 export type MealChoice = (typeof mealChoices)[number];
+export type InvitationVariant = 'day' | 'evening';
+
+export type RsvpCredential =
+  | { type: 'inviteToken'; value: string }
+  | { type: 'accessCode'; value: string };
 
 export interface GuestSubmission {
   guestId: string;
@@ -27,6 +32,8 @@ export interface ResolvedHousehold {
     displayName: string;
   }>;
   currentRsvp: CurrentRsvp | null;
+  invitationVariant: InvitationVariant;
+  mealChoiceRequired: boolean;
 }
 
 export interface SubmitResult {
@@ -74,7 +81,7 @@ export interface DraftErrors {
 }
 
 export interface SubmitPayload {
-  inviteToken: string;
+  credential: RsvpCredential;
   idempotencyKey: string;
   revision: number;
   attending: boolean;

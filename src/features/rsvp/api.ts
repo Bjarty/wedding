@@ -4,6 +4,7 @@ import type {
   MealChoice,
   PublicErrorCode,
   ResolvedHousehold,
+  RsvpCredential,
   SubmitPayload,
   SubmitResult,
 } from './types';
@@ -30,11 +31,18 @@ const knownErrorCodes = new Set<PublicErrorCode>([
 const mealChoices = new Set<MealChoice>(['fish', 'meat', 'vegetarian', 'vegan']);
 const opaqueIdPattern = /^[A-Za-z0-9_-]{1,64}$/u;
 const receiptPattern = /^RSVP-[A-Z0-9]{6,20}$/u;
-// The Worker may spend up to 5s on Turnstile and 20s on the Apps Script
-// writer. Keep separate margin for redirects, response parsing and network
+// The Worker may spend up to 5s on Turnstile and 60s on the Apps Script
+// writer. Keep a further 15s for redirects, response parsing and network
 // latency so the browser does not abandon a request the server can still
 // finish normally.
-const requestTimeoutMilliseconds = 35_000;
+export const RSVP_REQUEST_TIMEOUT_MILLISECONDS = 80_000;
+
+export const credentialRequestFields = (
+  credential: RsvpCredential,
+): { inviteToken: string } | { accessCode: string } =>
+  credential.type === 'inviteToken'
+    ? { inviteToken: credential.value }
+    : { accessCode: credential.value };
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -45,20 +53,31 @@ const isNonNegativeInteger = (value: unknown): value is number =>
 const isIsoTimestamp = (value: unknown): value is string =>
   typeof value === 'string' && value.length <= 35 && /^\d{4}-\d{2}-\d{2}T/u.test(value) && Number.isFinite(Date.parse(value));
 
-const parseGuestSubmission = (value: unknown): GuestSubmission | null => {
+const parseGuestSubmission = (
+  value: unknown,
+  mealChoiceRequired: boolean,
+): GuestSubmission | null => {
   if (!isRecord(value) || typeof value.guestId !== 'string' || !opaqueIdPattern.test(value.guestId)) return null;
   if (typeof value.attending !== 'boolean') return null;
 
-  if (value.attending) {
+  if (value.attending && mealChoiceRequired) {
     if (typeof value.mealChoice !== 'string' || !mealChoices.has(value.mealChoice as MealChoice)) return null;
     return { guestId: value.guestId, attending: true, mealChoice: value.mealChoice as MealChoice };
+  }
+
+  if (value.attending) {
+    if (value.mealChoice !== undefined) return null;
+    return { guestId: value.guestId, attending: true };
   }
 
   if (value.mealChoice !== undefined) return null;
   return { guestId: value.guestId, attending: false };
 };
 
-const parseCurrentRsvp = (value: unknown): CurrentRsvp | null | undefined => {
+const parseCurrentRsvp = (
+  value: unknown,
+  mealChoiceRequired: boolean,
+): CurrentRsvp | null | undefined => {
   if (value === null) return null;
   if (
     !isRecord(value) ||
@@ -73,7 +92,7 @@ const parseCurrentRsvp = (value: unknown): CurrentRsvp | null | undefined => {
     return undefined;
   }
 
-  const guests = value.guests.map(parseGuestSubmission);
+  const guests = value.guests.map((guest) => parseGuestSubmission(guest, mealChoiceRequired));
   if (guests.length === 0 || guests.some((guest) => guest === null)) return undefined;
   const parsedGuests = guests as GuestSubmission[];
   if (new Set(parsedGuests.map((guest) => guest.guestId)).size !== parsedGuests.length) return undefined;
@@ -106,7 +125,11 @@ const parseResolvedHousehold = (value: unknown): ResolvedHousehold | null => {
     (value.maxGuests as number) > 20 ||
     !Array.isArray(value.guests) ||
     value.guests.length === 0 ||
-    value.guests.length > 20
+    value.guests.length > 20 ||
+    (value.invitationVariant !== 'day' && value.invitationVariant !== 'evening') ||
+    typeof value.mealChoiceRequired !== 'boolean' ||
+    (value.invitationVariant === 'day' && value.mealChoiceRequired !== true) ||
+    (value.invitationVariant === 'evening' && value.mealChoiceRequired !== false)
   ) {
     return null;
   }
@@ -128,7 +151,7 @@ const parseResolvedHousehold = (value: unknown): ResolvedHousehold | null => {
   if (new Set(guests.map((guest) => guest.guestId)).size !== guests.length) return null;
   if (guests.length > (value.maxGuests as number)) return null;
 
-  const currentRsvp = parseCurrentRsvp(value.currentRsvp);
+  const currentRsvp = parseCurrentRsvp(value.currentRsvp, value.mealChoiceRequired);
   if (currentRsvp === undefined) return null;
   const allowedIds = new Set(guests.map((guest) => guest.guestId));
   if (
@@ -137,13 +160,16 @@ const parseResolvedHousehold = (value: unknown): ResolvedHousehold | null => {
       currentRsvp.guests.some((guest) => !allowedIds.has(guest.guestId)))
   ) return null;
 
-  return {
+  const household: ResolvedHousehold = {
     householdId: value.householdId,
     displayName: value.displayName,
     maxGuests: value.maxGuests as number,
     guests,
     currentRsvp,
+    invitationVariant: value.invitationVariant,
+    mealChoiceRequired: value.mealChoiceRequired,
   };
+  return household;
 };
 
 const parseSubmitResult = (value: unknown): SubmitResult | null => {
@@ -207,7 +233,7 @@ const post = async (
   const timeout = window.setTimeout(() => {
     timedOut = true;
     controller.abort();
-  }, requestTimeoutMilliseconds);
+  }, RSVP_REQUEST_TIMEOUT_MILLISECONDS);
 
   try {
     response = await fetch(`${apiBaseUrl}${path}`, {
@@ -250,14 +276,14 @@ const post = async (
 
 export const resolveHousehold = async (
   apiBaseUrl: string,
-  inviteToken: string,
+  credential: RsvpCredential,
   turnstileToken: string,
   signal?: AbortSignal,
 ): Promise<ResolvedHousehold> => {
   const data = await post(
     apiBaseUrl,
     '/v1/households/resolve',
-    { inviteToken, turnstileToken },
+    { ...credentialRequestFields(credential), turnstileToken },
     signal,
   );
   const household = parseResolvedHousehold(data);
@@ -270,7 +296,13 @@ export const submitRsvp = async (
   payload: SubmitPayload,
   signal?: AbortSignal,
 ): Promise<SubmitResult> => {
-  const data = await post(apiBaseUrl, '/v1/rsvps/submit', payload, signal);
+  const { credential, ...submission } = payload;
+  const data = await post(
+    apiBaseUrl,
+    '/v1/rsvps/submit',
+    { ...credentialRequestFields(credential), ...submission },
+    signal,
+  );
   const result = parseSubmitResult(data);
   if (
     result === null ||

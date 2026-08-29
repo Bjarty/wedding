@@ -22,9 +22,12 @@ const validateSecrets = (secrets, turnstileMode = 'pass') =>
   validateTestSecrets(secrets, { turnstileMode, fingerprint: fingerprintTestSecret });
 
 const template = await readFile(new URL('../wrangler.test.toml', import.meta.url), 'utf8');
+const productionTemplate = await readFile(new URL('../wrangler.toml', import.meta.url), 'utf8');
 const localConfig = template
-  .replace('REPLACE_WITH_UNUSED_POSITIVE_INTEGER_RESOLVE', '910001')
-  .replace('REPLACE_WITH_UNUSED_POSITIVE_INTEGER_SUBMIT', '910002');
+  .replace('REPLACE_WITH_UNUSED_POSITIVE_INTEGER_GLOBAL', '910001')
+  .replace('REPLACE_WITH_UNUSED_POSITIVE_INTEGER_CLIENT', '910002')
+  .replace('REPLACE_WITH_UNUSED_POSITIVE_INTEGER_RESOLVE', '910003')
+  .replace('REPLACE_WITH_UNUSED_POSITIVE_INTEGER_SUBMIT', '910004');
 
 test('committed Wrangler test template is fail-closed and contains no account values', () => {
   assert.deepEqual(validateTestConfig(template, { template: true }), {
@@ -34,14 +37,38 @@ test('committed Wrangler test template is fail-closed and contains no account va
   });
 });
 
+test('committed production template has no endpoint and requires every secret', () => {
+  assert.match(productionTemplate, /^workers_dev = false$/m);
+  assert.match(productionTemplate, /^preview_urls = false$/m);
+  assert.match(productionTemplate, /^ALLOWED_ORIGIN = "https:\/\/lisetteenbjarty\.nl"$/m);
+  assert.match(productionTemplate, /^HOUSEHOLD_CODES_ENABLED = "false"$/m);
+  assert.match(productionTemplate, /^TURNSTILE_EXPECTED_HOSTNAME = "lisetteenbjarty\.nl"$/m);
+  assert.doesNotMatch(productionTemplate, /^\s*(?:account_id|route|routes|custom_domain)\s*=/m);
+
+  const requiredBlock = productionTemplate.match(/^\[secrets\]\s*[\s\S]*?required\s*=\s*\[([\s\S]*?)\]/m);
+  assert.ok(requiredBlock);
+  assert.deepEqual(
+    [...requiredBlock[1].matchAll(/"([A-Z0-9_]+)"/g)].map((match) => match[1]).sort(),
+    [
+      'ACCESS_CODE_HASH_SECRET',
+      'INVITATION_TOKEN_HASH_SECRET',
+      'TURNSTILE_SECRET',
+      'WRITER_HMAC_SECRET',
+      'WRITER_URL',
+    ],
+  );
+  assert.equal((productionTemplate.match(/^\[\[ratelimits\]\]$/gm) ?? []).length, 4);
+  assert.equal((productionTemplate.match(/^namespace_id = "REPLACE_WITH_[A-Z_]+"$/gm) ?? []).length, 4);
+});
+
 test('a local test config requires distinct positive namespace IDs', () => {
   assert.doesNotThrow(() => validateTestConfig(localConfig));
   assert.throws(
-    () => validateTestConfig(localConfig.replace('910002', '910001')),
+    () => validateTestConfig(localConfig.replace('910004', '910001')),
     /namespace IDs must be different/,
   );
   assert.throws(
-    () => validateTestConfig(localConfig.replace('910002', 'REPLACE_ME')),
+    () => validateTestConfig(localConfig.replace('910004', 'REPLACE_ME')),
     /positive integer/,
   );
 });
@@ -69,8 +96,9 @@ test('test config rejects production routing and inline secrets', () => {
   );
 });
 
-test('test upload accepts only an isolated four-secret bundle', () => {
+test('test upload accepts only an isolated five-secret bundle', () => {
   const secrets = {
+    ACCESS_CODE_HASH_SECRET: 'abcdefghijklmnopqrstuvwxyz0123456789_-ABCDEFGHIJKLMNOPQRSTUVWXYZ',
     TURNSTILE_SECRET: TEST_PASS_SECRET,
     WRITER_URL: 'https://script.google.com/macros/s/test-deployment_123/exec',
     WRITER_HMAC_SECRET: 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-',
@@ -82,7 +110,7 @@ test('test upload accepts only an isolated four-secret bundle', () => {
   );
   assert.throws(
     () => validateSecrets({ ...secrets, EXTRA_SECRET: 'not-allowed' }),
-    /exactly the four test secrets/,
+    /exactly the five test secrets/,
   );
   assert.throws(
     () => validateSecrets({ ...secrets, WRITER_URL: 'https://example.test/dev' }),
@@ -94,6 +122,10 @@ test('test upload accepts only an isolated four-secret bundle', () => {
         ...secrets,
         INVITATION_TOKEN_HASH_SECRET: secrets.WRITER_HMAC_SECRET,
       }),
+    /must be different/,
+  );
+  assert.throws(
+    () => validateSecrets({ ...secrets, ACCESS_CODE_HASH_SECRET: secrets.WRITER_HMAC_SECRET }),
     /must be different/,
   );
   assert.throws(

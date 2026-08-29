@@ -1,8 +1,11 @@
 import {
+  ACCESS_CODE_ALPHABET,
   API_VERSION,
+  INVITATION_VARIANTS,
   LIMITS,
   MEAL_CHOICES,
   type CurrentRsvp,
+  type CredentialHash,
   type Env,
   type GuestSubmission,
   type MealChoice,
@@ -24,13 +27,21 @@ const TURNSTILE_DUMMY_SECRET_SHA256 = new Set([
   'fb8f35129df87662c650ada12fd614f1b58dce4a37fdd7589ba3a6b9a78c0aae',
   '1e3e58656012d861e23deae64f177673d7b86a9c55fe1d5d10b94e3c9755d168',
 ]);
-const WRITER_TIMEOUT_MILLISECONDS = 20_000;
+// A real Apps Script durable write can take 20–30 seconds, particularly while
+// Google follows the web-app redirect or waits for ScriptLock. Allow twice the
+// observed upper range; the browser timeout deliberately includes more margin.
+export const WRITER_TIMEOUT_MILLISECONDS = 60_000;
 const LOCAL_BROWSER_TEST_ORIGIN = 'http://localhost:3000';
 const OPAQUE_ID_PATTERN = /^[A-Za-z0-9_-]+$/;
 const IDEMPOTENCY_KEY_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const RECEIPT_NUMBER_PATTERN = /^RSVP-[A-Z0-9]{6,20}$/;
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/u;
 const UNSAFE_CONTROL_PATTERN = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/u;
+const RANDOM_SECRET_PATTERN = /^[A-Za-z0-9_-]{64}$/;
+const ACCESS_CODE_PATTERN = new RegExp(`^[${ACCESS_CODE_ALPHABET}]{${LIMITS.accessCodeLength}}$`);
+const CLIENT_IP_PATTERN = /^[0-9A-Fa-f:.]{2,64}$/;
+const ACCESS_CODE_HASH_DOMAIN = 'rsvp-access-code-v1\0';
+const CLIENT_RATE_LIMIT_HASH_DOMAIN = 'rsvp-client-ip-v1\0';
 
 const encodeBase64Url = (bytes: Uint8Array): string => {
   let binary = '';
@@ -95,13 +106,19 @@ const isIsoTimestamp = (value: unknown): value is string => {
   return Number.isFinite(parsed) && /^\d{4}-\d{2}-\d{2}T/u.test(value);
 };
 
-const parseWriterGuest = (value: unknown): GuestSubmission | undefined => {
+const parseWriterGuest = (
+  value: unknown,
+  mealChoiceRequired: boolean,
+): GuestSubmission | undefined => {
   if (!isRecord(value) || !hasOnlyKeys(value, ['guestId', 'attending'], ['mealChoice'])) return undefined;
   if (!boundedString(value.guestId, LIMITS.idMax, OPAQUE_ID_PATTERN) || typeof value.attending !== 'boolean') {
     return undefined;
   }
 
   if (value.attending) {
+    if (value.mealChoice === undefined && !mealChoiceRequired) {
+      return { guestId: value.guestId, attending: true };
+    }
     if (typeof value.mealChoice !== 'string' || !(MEAL_CHOICES as readonly string[]).includes(value.mealChoice)) {
       return undefined;
     }
@@ -116,11 +133,14 @@ const parseWriterGuest = (value: unknown): GuestSubmission | undefined => {
   return { guestId: value.guestId, attending: false };
 };
 
-const parseWriterGuests = (value: unknown): GuestSubmission[] | undefined => {
+const parseWriterGuests = (
+  value: unknown,
+  mealChoiceRequired: boolean,
+): GuestSubmission[] | undefined => {
   if (!Array.isArray(value) || value.length === 0 || value.length > LIMITS.householdGuestsMax) return undefined;
   const guests: GuestSubmission[] = [];
   for (const item of value) {
-    const guest = parseWriterGuest(item);
+    const guest = parseWriterGuest(item, mealChoiceRequired);
     if (guest === undefined) return undefined;
     guests.push(guest);
   }
@@ -128,7 +148,10 @@ const parseWriterGuests = (value: unknown): GuestSubmission[] | undefined => {
   return guests;
 };
 
-const parseCurrentRsvp = (value: unknown): CurrentRsvp | undefined => {
+const parseCurrentRsvp = (
+  value: unknown,
+  mealChoiceRequired: boolean,
+): CurrentRsvp | undefined => {
   if (!isRecord(value)) return undefined;
   if (
     !hasOnlyKeys(
@@ -145,7 +168,7 @@ const parseCurrentRsvp = (value: unknown): CurrentRsvp | undefined => {
     return undefined;
   }
 
-  const guests = parseWriterGuests(value.guests);
+  const guests = parseWriterGuests(value.guests, mealChoiceRequired);
   if (guests === undefined) return undefined;
   if (value.attending !== guests.some((guest) => guest.attending)) return undefined;
   if (
@@ -176,9 +199,24 @@ const parseCurrentRsvp = (value: unknown): CurrentRsvp | undefined => {
 const parseResolveResult = (value: unknown): ResolveResult | undefined => {
   if (
     !isRecord(value) ||
-    !hasOnlyKeys(value, ['householdId', 'displayName', 'maxGuests', 'guests', 'currentRsvp']) ||
+    !hasOnlyKeys(
+      value,
+      [
+        'householdId',
+        'displayName',
+        'invitationVariant',
+        'mealChoiceRequired',
+        'maxGuests',
+        'guests',
+        'currentRsvp',
+      ],
+    ) ||
     !boundedString(value.householdId, LIMITS.idMax, OPAQUE_ID_PATTERN) ||
     !boundedString(value.displayName, LIMITS.displayNameMax) ||
+    typeof value.invitationVariant !== 'string' ||
+    !(INVITATION_VARIANTS as readonly string[]).includes(value.invitationVariant) ||
+    typeof value.mealChoiceRequired !== 'boolean' ||
+    (value.invitationVariant === 'day') !== value.mealChoiceRequired ||
     !Number.isSafeInteger(value.maxGuests) ||
     (value.maxGuests as number) < 1 ||
     (value.maxGuests as number) > LIMITS.householdGuestsMax ||
@@ -209,7 +247,7 @@ const parseResolveResult = (value: unknown): ResolveResult | undefined => {
 
   let currentRsvp: CurrentRsvp | null = null;
   if (value.currentRsvp !== null) {
-    const parsed = parseCurrentRsvp(value.currentRsvp);
+    const parsed = parseCurrentRsvp(value.currentRsvp, value.mealChoiceRequired);
     if (parsed === undefined) return undefined;
     const allowedGuestIds = new Set(guests.map((guest) => guest.guestId));
     if (
@@ -224,6 +262,8 @@ const parseResolveResult = (value: unknown): ResolveResult | undefined => {
   return {
     householdId: value.householdId,
     displayName: value.displayName,
+    invitationVariant: value.invitationVariant as ResolveResult['invitationVariant'],
+    mealChoiceRequired: value.mealChoiceRequired,
     maxGuests: value.maxGuests as number,
     guests,
     currentRsvp,
@@ -285,11 +325,21 @@ export const assertEnvironment = async (
     env.TURNSTILE_EXPECTED_HOSTNAME.includes('..') ||
     typeof env.TURNSTILE_SECRET !== 'string' ||
     env.TURNSTILE_SECRET.length < 16 ||
+    typeof env.ACCESS_CODE_HASH_SECRET !== 'string' ||
+    !RANDOM_SECRET_PATTERN.test(env.ACCESS_CODE_HASH_SECRET) ||
+    new Set(env.ACCESS_CODE_HASH_SECRET).size < 16 ||
+    (env.HOUSEHOLD_CODES_ENABLED !== 'true' && env.HOUSEHOLD_CODES_ENABLED !== 'false') ||
     typeof env.INVITATION_TOKEN_HASH_SECRET !== 'string' ||
     env.INVITATION_TOKEN_HASH_SECRET.length < 32 ||
     typeof env.WRITER_HMAC_SECRET !== 'string' ||
     env.WRITER_HMAC_SECRET.length < 32 ||
-    env.INVITATION_TOKEN_HASH_SECRET === env.WRITER_HMAC_SECRET ||
+    new Set([
+      env.ACCESS_CODE_HASH_SECRET,
+      env.INVITATION_TOKEN_HASH_SECRET,
+      env.WRITER_HMAC_SECRET,
+    ]).size !== 3 ||
+    typeof env.CLIENT_RATE_LIMITER?.limit !== 'function' ||
+    typeof env.GLOBAL_RATE_LIMITER?.limit !== 'function' ||
     typeof env.RESOLVE_RATE_LIMITER?.limit !== 'function' ||
     typeof env.SUBMIT_RATE_LIMITER?.limit !== 'function' ||
     typeof dependencies.sha256Hex !== 'function'
@@ -316,10 +366,10 @@ export const assertEnvironment = async (
   }
 };
 
-export const enforceRateLimit = async (limiter: RateLimitBinding, tokenHash: string): Promise<void> => {
+export const enforceRateLimit = async (limiter: RateLimitBinding, key: string): Promise<void> => {
   let result: { success: boolean };
   try {
-    result = await limiter.limit({ key: tokenHash });
+    result = await limiter.limit({ key });
   } catch {
     throw new PublicHttpError(503, 'UPSTREAM_UNAVAILABLE');
   }
@@ -328,14 +378,14 @@ export const enforceRateLimit = async (limiter: RateLimitBinding, tokenHash: str
   }
 };
 
-export const hashInvitationToken = async (
-  inviteToken: string,
-  env: Env,
+const hmacBase64Url = async (
+  secret: string,
+  value: string,
   dependencies: RuntimeDependencies,
 ): Promise<string> => {
   const key = await dependencies.crypto.subtle.importKey(
     'raw',
-    new TextEncoder().encode(env.INVITATION_TOKEN_HASH_SECRET),
+    new TextEncoder().encode(secret),
     { name: 'HMAC', hash: 'SHA-256' },
     false,
     ['sign'],
@@ -343,9 +393,58 @@ export const hashInvitationToken = async (
   const digest = await dependencies.crypto.subtle.sign(
     'HMAC',
     key,
-    new TextEncoder().encode(inviteToken),
+    new TextEncoder().encode(value),
   );
   return encodeBase64Url(new Uint8Array(digest));
+};
+
+export const hashInvitationToken = async (
+  inviteToken: string,
+  env: Env,
+  dependencies: RuntimeDependencies,
+): Promise<string> => hmacBase64Url(env.INVITATION_TOKEN_HASH_SECRET, inviteToken, dependencies);
+
+export const hashAccessCode = async (
+  accessCode: string,
+  env: Env,
+  dependencies: RuntimeDependencies,
+): Promise<string> => {
+  if (!ACCESS_CODE_PATTERN.test(accessCode)) {
+    throw new PublicHttpError(422, 'VALIDATION_FAILED');
+  }
+  return hmacBase64Url(
+    env.ACCESS_CODE_HASH_SECRET,
+    `${ACCESS_CODE_HASH_DOMAIN}${accessCode}`,
+    dependencies,
+  );
+};
+
+export const hashClientIdentity = async (
+  request: Request,
+  env: Env,
+  dependencies: RuntimeDependencies,
+): Promise<string> => {
+  const supplied = request.headers.get('CF-Connecting-IP')?.trim() ?? '';
+  const clientIdentity = CLIENT_IP_PATTERN.test(supplied) ? supplied.toLowerCase() : 'unavailable';
+  return hmacBase64Url(
+    env.ACCESS_CODE_HASH_SECRET,
+    `${CLIENT_RATE_LIMIT_HASH_DOMAIN}${clientIdentity}`,
+    dependencies,
+  );
+};
+
+export const hashCredential = async (
+  credential: { inviteToken: string } | { accessCode: string },
+  env: Env,
+  dependencies: RuntimeDependencies,
+): Promise<CredentialHash> => {
+  if ('inviteToken' in credential) {
+    return { tokenHash: await hashInvitationToken(credential.inviteToken, env, dependencies) };
+  }
+  if (env.HOUSEHOLD_CODES_ENABLED !== 'true') {
+    throw new PublicHttpError(404, 'INVITATION_INVALID');
+  }
+  return { accessCodeHash: await hashAccessCode(credential.accessCode, env, dependencies) };
 };
 
 export const verifyTurnstile = async (

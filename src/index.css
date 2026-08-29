@@ -75,3 +75,59 @@
   background: linear-gradient(90deg, transparent, #CA8A04, transparent);
   animation: beam 2s infinite linear;
 }
+
+@media (prefers-reduced-motion: reduce) {
+  .mesh-gradient,
+  .border-beam::after {
+    animation: none;
+  }
+}
+
+@media print {
+  @page {
+    size: A5 portrait;
+    margin: 0;
+  }
+
+  .invitation-preview-controls,
+  .invitation-side-label {
+    display: none !important;
+  }
+
+  .invitation-preview-shell {
+    min-height: 0 !important;
+    padding: 0 !important;
+    background: #FFFFFF !important;
+  }
+
+  .invitation-preview-grid {
+    display: block !important;
+    max-width: none !important;
+  }
+
+  .invitation-preview-grid > section {
+    break-after: page;
+    page-break-after: always;
+  }
+
+  .invitation-preview-grid > section:last-child {
+    break-after: auto;
+    page-break-after: auto;
+  }
+
+  .invitation-sheet {
+    width: 148mm !important;
+    height: 210mm !important;
+    min-height: 210mm !important;
+    max-width: none !important;
+    aspect-ratio: auto !important;
+    box-shadow: none !important;
+    print-color-adjust: exact;
+    -webkit-print-color-adjust: exact;
+  }
+
+  .invitation-qr svg {
+    width: 35mm !important;
+    height: 35mm !important;
+  }
+}

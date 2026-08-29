@@ -13,12 +13,14 @@ const faults = {
   flushCount: 0,
   failAtFlush: null,
   rangeWrite: null,
+  rangeWrites: [],
 };
 
 const resetFaults = () => {
   faults.flushCount = 0;
   faults.failAtFlush = null;
   faults.rangeWrite = null;
+  faults.rangeWrites = [];
 };
 
 const failAtFlush = (number) => {
@@ -71,6 +73,13 @@ class MockRange {
 
   setValues(values) {
     assert.equal(values.length, this.rowCount);
+    faults.rangeWrites.push({
+      sheetName: this.sheet.name,
+      row: this.row,
+      column: this.column,
+      rowCount: this.rowCount,
+      columnCount: this.columnCount,
+    });
     if (faults.rangeWrite
         && faults.rangeWrite.sheetName === this.sheet.name
         && faults.rangeWrite.row === this.row
@@ -264,6 +273,11 @@ const hostValue = (value) => JSON.parse(JSON.stringify(value));
 run('initSheet()');
 
 const invitationHeaders = [
+  'householdId', 'tokenHash', 'accessCodeHash', 'displayName',
+  'invitationVariant', 'mealChoiceRequired', 'maxGuests', 'active',
+  'currentRevision', 'createdAt', 'updatedAt',
+];
+const legacyInvitationHeaders = [
   'householdId', 'tokenHash', 'displayName', 'maxGuests', 'active',
   'currentRevision', 'createdAt', 'updatedAt',
 ];
@@ -271,18 +285,72 @@ const guestHeaders = [
   'householdId', 'guestId', 'displayName', 'attending', 'mealChoice',
   'revision', 'updatedAt',
 ];
-assert.deepEqual(spreadsheet.getSheetByName('Invitations').rows[0], invitationHeaders);
 assert.deepEqual(spreadsheet.getSheetByName('GuestDetails').rows[0], guestHeaders);
 
 const tokenHash = createHmac('sha256', 'separate-token-hash-secret-with-32-chars')
   .update('raw-token-that-never-reaches-the-writer')
   .digest('base64url');
+const accessCodeHash = createHmac('sha256', 'separate-access-code-secret-with-32-chars')
+  .update('7K3MP9TWX4HCQ2RDV6FN')
+  .digest('base64url');
 assert.equal(tokenHash.length, 43);
+assert.equal(accessCodeHash.length, 43);
 
-spreadsheet.getSheetByName('Invitations').getRange(2, 1, 1, 8).setValues([[
+// Recreate the exact legacy Invitations layout and prove migration refuses a
+// pending durable write before changing any header or data cell.
+const invitationSheet = spreadsheet.getSheetByName('Invitations');
+invitationSheet.getRange(1, 1, 1, invitationHeaders.length).setValues([[
+  ...legacyInvitationHeaders,
+  ...Array(invitationHeaders.length - legacyInvitationHeaders.length).fill(''),
+]]);
+invitationSheet.getRange(2, 1, 1, invitationHeaders.length).setValues([[
   'household_1', tokenHash, 'Familie Voorbeeld', 2, true, 0,
   '2026-08-29T00:00:00.000Z', '2026-08-29T00:00:00.000Z',
+  ...Array(invitationHeaders.length - legacyInvitationHeaders.length).fill(''),
 ]]);
+const idempotencySheetForMigration = spreadsheet.getSheetByName('Idempotency');
+const idempotencyHeadersForMigration = idempotencySheetForMigration.rows[0];
+idempotencySheetForMigration.getRange(2, 1, 1, idempotencyHeadersForMigration.length).setValues([[
+  ...idempotencyHeadersForMigration.map((header) => ({ operation: 'submit', status: 'pending' })[header] ?? ''),
+]]);
+assert.throws(() => run('migrateInvitationSchemaV1ToV2()'), /pending submit intent/);
+assert.deepEqual(invitationSheet.rows[0].slice(0, legacyInvitationHeaders.length), legacyInvitationHeaders);
+idempotencySheetForMigration.getRange(2, 1, 1, idempotencyHeadersForMigration.length).clearContent();
+
+faults.rangeWrites = [];
+failBeforeRangeWrite('Invitations', 1, 1);
+assert.throws(() => run('migrateInvitationSchemaV1ToV2()'), /Injected range-write failure/);
+assert.deepEqual(invitationSheet.rows[0].slice(0, legacyInvitationHeaders.length), legacyInvitationHeaders);
+assert.equal(invitationSheet.rows[1][2], 'Familie Voorbeeld');
+assert.deepEqual(faults.rangeWrites, [{
+  sheetName: 'Invitations',
+  row: 1,
+  column: 1,
+  rowCount: 2,
+  columnCount: invitationHeaders.length,
+}]);
+
+faults.rangeWrites = [];
+const migration = hostValue(run('migrateInvitationSchemaV1ToV2()'));
+assert.deepEqual(migration, { migrated: true, schemaVersion: 2, invitationRows: 1 });
+assert.deepEqual(faults.rangeWrites, [{
+  sheetName: 'Invitations',
+  row: 1,
+  column: 1,
+  rowCount: 2,
+  columnCount: invitationHeaders.length,
+}]);
+assert.deepEqual(invitationSheet.rows[0], invitationHeaders);
+assert.deepEqual(invitationSheet.rows[1], [
+  'household_1', tokenHash, '', 'Familie Voorbeeld', 'day', true, 2, true, 0,
+  '2026-08-29T00:00:00.000Z', '2026-08-29T00:00:00.000Z',
+]);
+assert.deepEqual(hostValue(run('migrateInvitationSchemaV1ToV2()')), {
+  migrated: false,
+  schemaVersion: 2,
+  invitationRows: 1,
+});
+
 spreadsheet.getSheetByName('GuestDetails').getRange(2, 1, 2, 7).setValues([
   ['household_1', 'guest_1', 'Gast Eén', '', '', 0, ''],
   ['household_1', 'guest_2', 'Gast Twee', '', '', 0, ''],
@@ -306,12 +374,15 @@ const post = (envelope) => {
   return JSON.parse(output.text);
 };
 
-const invitationSheet = spreadsheet.getSheetByName('Invitations');
-const validProvisioningTimestamp = invitationSheet.getCell(2, 8);
-invitationSheet.setCell(2, 8, '');
+const invitationUpdatedAtColumn = invitationHeaders.indexOf('updatedAt') + 1;
+const invitationActiveColumn = invitationHeaders.indexOf('active') + 1;
+const invitationVariantColumn = invitationHeaders.indexOf('invitationVariant') + 1;
+const invitationMealPolicyColumn = invitationHeaders.indexOf('mealChoiceRequired') + 1;
+const validProvisioningTimestamp = invitationSheet.getCell(2, invitationUpdatedAtColumn);
+invitationSheet.setCell(2, invitationUpdatedAtColumn, '');
 assert.equal(post(makeEnvelope('resolve', { tokenHash })).error.code, 'WRITER_BUSY');
 assert.equal(spreadsheet.getSheetByName('Idempotency').getLastRow(), 1);
-invitationSheet.setCell(2, 8, validProvisioningTimestamp);
+invitationSheet.setCell(2, invitationUpdatedAtColumn, validProvisioningTimestamp);
 
 const provisioningResponseSheet = spreadsheet.getSheetByName('Responses');
 provisioningResponseSheet.getRange(2, 1, 1, 10).setValues([[
@@ -337,6 +408,8 @@ assert.equal(firstResolve.ok, true);
 assert.deepEqual(firstResolve.data, {
   householdId: 'household_1',
   displayName: 'Familie Voorbeeld',
+  invitationVariant: 'day',
+  mealChoiceRequired: true,
   maxGuests: 2,
   guests: [
     { guestId: 'guest_1', displayName: 'Gast Eén' },
@@ -447,6 +520,86 @@ const updated = post(makeEnvelope('submit', updateData));
 assert.equal(updated.data.revision, 2);
 assert.equal(updated.data.receiptNumber, firstSubmit.data.receiptNumber);
 
+// A v2 access-code household is resolved by accessCodeHash only. Its evening
+// policy is returned to the browser and is enforced again by the writer.
+invitationSheet.getRange(3, 1, 1, invitationHeaders.length).setValues([[
+  'household_evening', '', accessCodeHash, 'Familie Avond', 'evening', false,
+  1, true, 0, '2026-08-29T00:00:00.000Z', '2026-08-29T00:00:00.000Z',
+]]);
+spreadsheet.getSheetByName('GuestDetails').getRange(4, 1, 1, 7).setValues([[
+  'household_evening', 'guest_evening_1', 'Avondgast Eén', '', '', 0, '',
+]]);
+
+assert.equal(post(makeEnvelope('resolve', { tokenHash, accessCodeHash })).error.code, 'INVITATION_INVALID');
+assert.equal(post(makeEnvelope('resolve', {})).error.code, 'INVITATION_INVALID');
+assert.equal(post(makeEnvelope('submit', {
+  ...updateData,
+  accessCodeHash,
+  idempotencyKey: randomUUID(),
+  revision: 2,
+})).error.code, 'INVITATION_INVALID');
+const eveningResolve = post(makeEnvelope('resolve', { accessCodeHash }));
+assert.equal(eveningResolve.ok, true);
+assert.deepEqual(eveningResolve.data, {
+  householdId: 'household_evening',
+  displayName: 'Familie Avond',
+  invitationVariant: 'evening',
+  mealChoiceRequired: false,
+  maxGuests: 1,
+  guests: [{ guestId: 'guest_evening_1', displayName: 'Avondgast Eén' }],
+  currentRsvp: null,
+});
+
+const eveningFirstData = {
+  accessCodeHash,
+  idempotencyKey: randomUUID(),
+  revision: 0,
+  attending: true,
+  guests: [{ guestId: 'guest_evening_1', attending: true }],
+};
+const eveningFirst = post(makeEnvelope('submit', eveningFirstData));
+assert.equal(eveningFirst.ok, true);
+assert.equal(eveningFirst.data.revision, 1);
+const eveningCurrent = post(makeEnvelope('resolve', { accessCodeHash }));
+assert.deepEqual(eveningCurrent.data.currentRsvp.guests, [
+  { guestId: 'guest_evening_1', attending: true },
+]);
+
+const eveningResponseBeforeUpdate = rowsAsObjects('Responses')
+  .find((row) => row.values.householdId === 'household_evening').values;
+const eveningSecond = post(makeEnvelope('submit', {
+  ...eveningFirstData,
+  idempotencyKey: randomUUID(),
+  revision: 1,
+  attending: false,
+  guests: [{ guestId: 'guest_evening_1', attending: false }],
+}));
+assert.equal(eveningSecond.data.revision, 2);
+assert.equal(eveningSecond.data.receiptNumber, eveningFirst.data.receiptNumber);
+const eveningResponses = rowsAsObjects('Responses')
+  .filter((row) => row.values.householdId === 'household_evening');
+assert.equal(eveningResponses.length, 1);
+assert.equal(eveningResponses[0].values.responseId, eveningResponseBeforeUpdate.responseId);
+assert.equal(eveningResponses[0].values.submittedAt, eveningResponseBeforeUpdate.submittedAt);
+
+assert.equal(post(makeEnvelope('submit', {
+  tokenHash,
+  idempotencyKey: randomUUID(),
+  revision: 2,
+  attending: true,
+  guests: [
+    { guestId: 'guest_1', attending: true },
+    { guestId: 'guest_2', attending: false },
+  ],
+})).error.code, 'INVITATION_INVALID');
+assert.equal(post(makeEnvelope('submit', {
+  accessCodeHash,
+  idempotencyKey: randomUUID(),
+  revision: 2,
+  attending: true,
+  guests: [{ guestId: 'guest_evening_1', attending: true, mealChoice: 'fish' }],
+})).error.code, 'INVITATION_INVALID');
+
 const unknownNameData = {
   ...updateData,
   idempotencyKey: randomUUID(),
@@ -479,7 +632,7 @@ assert.equal(post(makeEnvelope('submit', {
   ],
 })).error.code, 'INVITATION_INVALID');
 
-const rowsAsObjects = (sheetName) => {
+function rowsAsObjects(sheetName) {
   const sheet = spreadsheet.getSheetByName(sheetName);
   const [headers, ...rows] = sheet.rows;
   return rows
@@ -488,7 +641,7 @@ const rowsAsObjects = (sheetName) => {
       rowNumber: index + 2,
       values: Object.fromEntries(headers.map((header, column) => [header, row[column] ?? ''])),
     }));
-};
+}
 const rowsMatching = (sheetName, column, value) =>
   rowsAsObjects(sheetName).filter((row) => String(row.values[column]) === String(value));
 const invitationRevision = () => Number(rowsAsObjects('Invitations')[0].values.currentRevision);
@@ -591,6 +744,61 @@ const midGuestIntent = JSON.parse(
 expectSingleDurableResult(midGuestData, midGuestIntent.result);
 durableRevision += 1;
 
+// A pending intent written by the legacy writer has no policy field. Its
+// authenticated day/meal-required semantics remain recoverable after schema
+// migration and are never reinterpreted as evening policy.
+resetFaults();
+tickTestClock();
+const legacyIntentData = makeDurableSubmit(durableRevision);
+failAtFlush(1);
+assert.equal(post(makeEnvelope('submit', legacyIntentData)).error.code, 'WRITER_BUSY');
+const legacyIntentRow = rowsMatching('Idempotency', 'idempotencyKey', legacyIntentData.idempotencyKey)[0];
+const legacyIntentBody = JSON.parse(legacyIntentRow.values.intentJson);
+delete legacyIntentBody.policy;
+const legacyIntentJson = JSON.stringify(legacyIntentBody);
+const legacyIntentMacInput = [
+  'rsvp-intent-v1',
+  legacyIntentRow.values.requestId,
+  legacyIntentRow.values.idempotencyKey,
+  legacyIntentRow.values.payloadHash,
+  legacyIntentRow.values.householdId,
+  legacyIntentRow.values.baseRevision,
+  legacyIntentRow.values.targetRevision,
+  legacyIntentJson,
+].join('|');
+const legacyIntentMac = createHmac('sha256', writerSecret)
+  .update(legacyIntentMacInput, 'utf8')
+  .digest('base64url');
+const idempotencyHeader = spreadsheet.getSheetByName('Idempotency').rows[0];
+const legacyIntentJsonColumn = idempotencyHeader.indexOf('intentJson') + 1;
+const legacyIntentMacColumn = idempotencyHeader.indexOf('intentMac') + 1;
+spreadsheet.getSheetByName('Idempotency')
+  .setCell(legacyIntentRow.rowNumber, legacyIntentJsonColumn, legacyIntentJson);
+spreadsheet.getSheetByName('Idempotency')
+  .setCell(legacyIntentRow.rowNumber, legacyIntentMacColumn, legacyIntentMac);
+resetFaults();
+expectSingleDurableResult(legacyIntentData, legacyIntentBody.result);
+durableRevision += 1;
+
+// New intent policy is inside the authenticated JSON and must also still
+// match the current private Invitation row during recovery.
+resetFaults();
+tickTestClock();
+const policyBindingData = makeDurableSubmit(durableRevision);
+failAtFlush(1);
+assert.equal(post(makeEnvelope('submit', policyBindingData)).error.code, 'WRITER_BUSY');
+const policyBindingRow = rowsMatching('Idempotency', 'idempotencyKey', policyBindingData.idempotencyKey)[0];
+const policyBindingIntent = JSON.parse(policyBindingRow.values.intentJson);
+invitationSheet.setCell(2, invitationVariantColumn, 'evening');
+invitationSheet.setCell(2, invitationMealPolicyColumn, false);
+resetFaults();
+assert.equal(post(makeEnvelope('submit', policyBindingData)).error.code, 'WRITER_BUSY');
+assert.equal(invitationRevision(), durableRevision);
+invitationSheet.setCell(2, invitationVariantColumn, 'day');
+invitationSheet.setCell(2, invitationMealPolicyColumn, true);
+expectSingleDurableResult(policyBindingData, policyBindingIntent.result);
+durableRevision += 1;
+
 // A changed retry cannot take over an existing key, even if its original
 // request first needs recovery.
 resetFaults();
@@ -654,11 +862,11 @@ const closedRecoveryIntent = JSON.parse(
   rowsMatching('Idempotency', 'idempotencyKey', closedRecoveryData.idempotencyKey)[0].values.intentJson,
 );
 const invitationsSheet = spreadsheet.getSheetByName('Invitations');
-invitationsSheet.setCell(2, 5, false);
+invitationsSheet.setCell(2, invitationActiveColumn, false);
 properties.set('RSVP_CLOSE_AT', '2000-01-01T00:00:00+01:00');
 resetFaults();
 expectSingleDurableResult(closedRecoveryData, closedRecoveryIntent.result);
-invitationsSheet.setCell(2, 5, true);
+invitationsSheet.setCell(2, invitationActiveColumn, true);
 properties.set('RSVP_CLOSE_AT', '2099-01-01T00:00:00+01:00');
 durableRevision += 1;
 

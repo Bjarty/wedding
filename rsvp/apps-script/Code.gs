@@ -21,6 +21,17 @@ const TOKEN_HASH_PATTERN_ = /^[A-Za-z0-9_-]{43}$/;
 const OPAQUE_ID_PATTERN_ = /^[A-Za-z0-9_-]{1,64}$/;
 const RECEIPT_NUMBER_PATTERN_ = /^RSVP-[A-Z0-9]{6,20}$/;
 const MEAL_CHOICES_ = new Set(['fish', 'meat', 'vegetarian', 'vegan']);
+const INVITATION_VARIANTS_ = new Set(['day', 'evening']);
+const LEGACY_INVITATION_HEADERS_ = Object.freeze([
+  'householdId',
+  'tokenHash',
+  'displayName',
+  'maxGuests',
+  'active',
+  'currentRevision',
+  'createdAt',
+  'updatedAt',
+]);
 const PUBLIC_ERROR_CODES_ = new Set([
   'INVITATION_INVALID',
   'RSVP_CLOSED',
@@ -42,7 +53,10 @@ const HEADERS_ = Object.freeze({
   Invitations: [
     'householdId',
     'tokenHash',
+    'accessCodeHash',
     'displayName',
+    'invitationVariant',
+    'mealChoiceRequired',
     'maxGuests',
     'active',
     'currentRevision',
@@ -102,7 +116,7 @@ const HEADERS_ = Object.freeze({
 });
 
 const TEXT_COLUMNS_ = Object.freeze({
-  Invitations: ['householdId', 'tokenHash', 'displayName'],
+  Invitations: ['householdId', 'tokenHash', 'accessCodeHash', 'displayName', 'invitationVariant'],
   Responses: ['responseId', 'receiptNumber', 'householdId', 'email', 'message'],
   GuestDetails: ['householdId', 'guestId', 'displayName', 'mealChoice'],
   Idempotency: [
@@ -169,6 +183,118 @@ function initSheet() {
     owner: spreadsheet.getOwner().getEmail(),
     sheets: initialized,
   };
+}
+
+/**
+ * Migrates only the legacy Invitations header to the v2 access-code schema.
+ *
+ * Existing invitations remain usable through tokenHash and receive the
+ * legacy-safe policy day/meal-required. The migration is idempotent, refuses
+ * unrecognized headers and never runs while a durable submit intent is
+ * pending. It deliberately does not create access codes.
+ */
+function migrateInvitationSchemaV1ToV2() {
+  return withScriptLock_(() => {
+    const spreadsheet = getConfiguredSpreadsheet_();
+    assertExpectedOwner_(spreadsheet);
+    getEnvironment_();
+
+    const invitationSheet = spreadsheet.getSheetByName(SHEETS_.invitations);
+    if (!invitationSheet) throw new Error('Missing required sheet Invitations.');
+    const currentHeaders = HEADERS_.Invitations;
+    if (invitationSheet.getLastColumn() > currentHeaders.length) {
+      throw new Error('Invitations contains unexpected trailing columns; no data was changed.');
+    }
+    const headerWidth = Math.max(LEGACY_INVITATION_HEADERS_.length, currentHeaders.length);
+    const visibleHeader = invitationSheet.getRange(1, 1, 1, headerWidth).getDisplayValues()[0];
+    const isCurrent = arraysEqual_(visibleHeader.slice(0, currentHeaders.length), currentHeaders)
+      && visibleHeader.slice(currentHeaders.length).every((value) => value.trim() === '');
+    if (isCurrent) {
+      assertSchema_(spreadsheet);
+      return { migrated: false, schemaVersion: 2, invitationRows: Math.max(0, invitationSheet.getLastRow() - 1) };
+    }
+
+    const isLegacy = arraysEqual_(
+      visibleHeader.slice(0, LEGACY_INVITATION_HEADERS_.length),
+      LEGACY_INVITATION_HEADERS_,
+    ) && visibleHeader.slice(LEGACY_INVITATION_HEADERS_.length).every((value) => value.trim() === '');
+    if (!isLegacy) throw new Error('Invitations has neither the exact legacy nor v2 header; no data was changed.');
+
+    for (const sheetName of Object.values(SHEETS_)) {
+      if (sheetName === SHEETS_.invitations) continue;
+      const sheet = spreadsheet.getSheetByName(sheetName);
+      const headers = HEADERS_[sheetName];
+      if (!sheet) throw new Error(`Missing required sheet ${sheetName}; no data was changed.`);
+      const actual = sheet.getRange(1, 1, 1, headers.length).getDisplayValues()[0];
+      if (!arraysEqual_(actual, headers)) {
+        throw new Error(`Sheet ${sheetName} has unexpected headers; no data was changed.`);
+      }
+    }
+
+    const idempotencySheet = spreadsheet.getSheetByName(SHEETS_.idempotency);
+    const submitIntents = findRows_(idempotencySheet, 'operation', 'submit');
+    if (submitIntents.some((row) => !['pending', 'completed'].includes(String(row.values.status)))) {
+      throw new Error('A submit intent has an unknown status; no migration was performed.');
+    }
+    const pendingSubmit = submitIntents.some((row) => String(row.values.status) === 'pending');
+    if (pendingSubmit) throw new Error('A pending submit intent exists; no migration was performed.');
+
+    const dataRowCount = Math.max(0, invitationSheet.getLastRow() - 1);
+    const legacyRows = dataRowCount === 0
+      ? []
+      : invitationSheet.getRange(2, 1, dataRowCount, headerWidth).getValues();
+    const householdIds = new Set();
+    const tokenHashes = new Set();
+    const migratedRows = legacyRows.map((row) => {
+      if (row.slice(LEGACY_INVITATION_HEADERS_.length).some((value) => value !== '' && value !== null)) {
+        throw new Error('Legacy Invitations contains unexpected trailing data; no data was changed.');
+      }
+      const legacy = Object.fromEntries(
+        LEGACY_INVITATION_HEADERS_.map((header, index) => [header, row[index]]),
+      );
+      const householdId = normalizeOpaqueId_(legacy.householdId);
+      const tokenHash = normalizeStoredCredentialHash_(legacy.tokenHash, false);
+      normalizeStoredDisplayName_(legacy.displayName);
+      asInteger_(legacy.maxGuests, 1, 20);
+      asBooleanStrict_(legacy.active);
+      if (legacy.currentRevision !== '') asInteger_(legacy.currentRevision, 0, 1000000);
+      toIsoTimestamp_(legacy.createdAt);
+      toIsoTimestamp_(legacy.updatedAt);
+      if (householdIds.has(householdId) || tokenHashes.has(tokenHash)) {
+        throw new Error('Legacy Invitations contains duplicate household or token hashes; no data was changed.');
+      }
+      householdIds.add(householdId);
+      tokenHashes.add(tokenHash);
+
+      return [
+        legacy.householdId,
+        legacy.tokenHash,
+        '',
+        legacy.displayName,
+        'day',
+        true,
+        legacy.maxGuests,
+        legacy.active,
+        legacy.currentRevision,
+        legacy.createdAt,
+        legacy.updatedAt,
+      ];
+    });
+
+    ensureColumnCapacity_(invitationSheet, currentHeaders.length);
+    // Commit header and converted rows in one Sheets write. A failure cannot
+    // otherwise leave a v2 header above still-legacy row positions, which a
+    // retry could mistake for an already completed migration.
+    invitationSheet
+      .getRange(1, 1, migratedRows.length + 1, currentHeaders.length)
+      .setValues([currentHeaders, ...migratedRows]);
+    setTextColumnFormats_(invitationSheet, currentHeaders, TEXT_COLUMNS_.Invitations);
+    invitationSheet.setFrozenRows(1);
+    invitationSheet.autoResizeColumns(1, currentHeaders.length);
+    SpreadsheetApp.flush();
+    assertSchema_(spreadsheet);
+    return { migrated: true, schemaVersion: 2, invitationRows: migratedRows.length };
+  });
 }
 
 /** Read-only preview for a defense-in-depth Sheet data clear. */
@@ -364,19 +490,32 @@ function readWriterPayload_(envelope) {
   return payload;
 }
 
+function validateCredentialHashData_(data, allowedOtherKeys) {
+  const actualKeys = Object.keys(data);
+  const allowed = new Set(['tokenHash', 'accessCodeHash'].concat(allowedOtherKeys));
+  if (actualKeys.some((key) => !allowed.has(key))) throw new ApiError_('WRITER_BUSY');
+  const hasTokenHash = Object.prototype.hasOwnProperty.call(data, 'tokenHash');
+  const hasAccessCodeHash = Object.prototype.hasOwnProperty.call(data, 'accessCodeHash');
+  if (hasTokenHash === hasAccessCodeHash) throw new ApiError_('INVITATION_INVALID');
+  return hasTokenHash
+    ? { tokenHash: normalizeTokenHash_(data.tokenHash) }
+    : { accessCodeHash: normalizeTokenHash_(data.accessCodeHash) };
+}
+
 function validateResolveData_(data) {
-  assertExactKeys_(data, ['tokenHash']);
-  return { tokenHash: normalizeTokenHash_(data.tokenHash) };
+  return validateCredentialHashData_(data, []);
 }
 
 function validateSubmitData_(data) {
   assertAllowedAndRequiredKeys_(
     data,
-    ['tokenHash', 'idempotencyKey', 'revision', 'attending', 'guests'],
-    ['email', 'message'],
+    ['idempotencyKey', 'revision', 'attending', 'guests'],
+    ['tokenHash', 'accessCodeHash', 'email', 'message'],
   );
 
-  const tokenHash = normalizeTokenHash_(data.tokenHash);
+  const credential = validateCredentialHashData_(data, [
+    'idempotencyKey', 'revision', 'attending', 'guests', 'email', 'message',
+  ]);
   if (typeof data.idempotencyKey !== 'string'
       || !IDEMPOTENCY_KEY_PATTERN_.test(data.idempotencyKey)) {
     throw new ApiError_('WRITER_BUSY');
@@ -399,10 +538,13 @@ function validateSubmitData_(data) {
     }
     if (typeof guest.attending !== 'boolean') throw new ApiError_('WRITER_BUSY');
     if (guest.attending) {
-      if (typeof guest.mealChoice !== 'string' || !MEAL_CHOICES_.has(guest.mealChoice)) {
+      if (guest.mealChoice !== undefined
+          && (typeof guest.mealChoice !== 'string' || !MEAL_CHOICES_.has(guest.mealChoice))) {
         throw new ApiError_('WRITER_BUSY');
       }
-      return { guestId: guest.guestId, attending: true, mealChoice: guest.mealChoice };
+      return guest.mealChoice === undefined
+        ? { guestId: guest.guestId, attending: true }
+        : { guestId: guest.guestId, attending: true, mealChoice: guest.mealChoice };
     }
     if (guest.mealChoice !== undefined) throw new ApiError_('WRITER_BUSY');
     return { guestId: guest.guestId, attending: false };
@@ -416,7 +558,7 @@ function validateSubmitData_(data) {
   }
 
   const normalized = {
-    tokenHash,
+    ...credential,
     idempotencyKey: data.idempotencyKey,
     revision: data.revision,
     attending: data.attending,
@@ -434,16 +576,19 @@ function validateSubmitData_(data) {
 
 function hashCanonicalSubmitData_(data) {
   const canonical = {
-    tokenHash: data.tokenHash,
+    ...(data.tokenHash ? { tokenHash: data.tokenHash } : { accessCodeHash: data.accessCodeHash }),
     idempotencyKey: data.idempotencyKey,
     revision: data.revision,
     attending: data.attending,
     guests: data.guests
       .slice()
       .sort((left, right) => left.guestId.localeCompare(right.guestId))
-      .map((guest) => guest.attending
-        ? { guestId: guest.guestId, attending: true, mealChoice: guest.mealChoice }
-        : { guestId: guest.guestId, attending: false }),
+      .map((guest) => {
+        if (!guest.attending) return { guestId: guest.guestId, attending: false };
+        return guest.mealChoice === undefined
+          ? { guestId: guest.guestId, attending: true }
+          : { guestId: guest.guestId, attending: true, mealChoice: guest.mealChoice };
+      }),
   };
   if (data.email) canonical.email = data.email;
   if (data.message) canonical.message = data.message;
@@ -453,11 +598,11 @@ function hashCanonicalSubmitData_(data) {
 function resolveHousehold_(data, payloadHash, envelope) {
   return withScriptLock_(() => {
     const spreadsheet = getReadySpreadsheet_();
-    const candidateInvitation = getInvitationByTokenHash_(spreadsheet, data.tokenHash);
+    const candidateInvitation = getInvitationByCredentialHash_(spreadsheet, data);
     recoverPendingIntentsForHousehold_(spreadsheet, candidateInvitation.householdId);
     assertRsvpOpen_();
     rejectReplayedRequestId_(spreadsheet, envelope.requestId);
-    const invitation = getActiveInvitation_(spreadsheet, data.tokenHash);
+    const invitation = getActiveInvitation_(spreadsheet, data);
     const guests = getPresetGuests_(spreadsheet, invitation.householdId);
     assertGuestCapacity_(guests, invitation.maxGuests);
     const currentRsvp = getCurrentRsvp_(spreadsheet, invitation, guests);
@@ -485,6 +630,8 @@ function resolveHousehold_(data, payloadHash, envelope) {
     return {
       householdId: invitation.householdId,
       displayName: invitation.displayName,
+      invitationVariant: invitation.invitationVariant,
+      mealChoiceRequired: invitation.mealChoiceRequired,
       maxGuests: invitation.maxGuests,
       guests: guests.map((guest) => ({ guestId: guest.guestId, displayName: guest.displayName })),
       currentRsvp,
@@ -495,7 +642,7 @@ function resolveHousehold_(data, payloadHash, envelope) {
 function submitResponse_(data, payloadHash, envelope) {
   return withScriptLock_(() => {
     const spreadsheet = getReadySpreadsheet_();
-    const candidateInvitation = getInvitationByTokenHash_(spreadsheet, data.tokenHash);
+    const candidateInvitation = getInvitationByCredentialHash_(spreadsheet, data);
     recoverPendingIntentsForHousehold_(spreadsheet, candidateInvitation.householdId);
     const idempotencySheet = spreadsheet.getSheetByName(SHEETS_.idempotency);
     const priorRequest = findUniqueRow_(idempotencySheet, 'idempotencyKey', data.idempotencyKey);
@@ -515,7 +662,7 @@ function submitResponse_(data, payloadHash, envelope) {
     // new logical submissions are subject to the close time.
     assertRsvpOpen_();
     rejectReplayedRequestId_(spreadsheet, envelope.requestId);
-    const invitation = getActiveInvitation_(spreadsheet, data.tokenHash);
+    const invitation = getActiveInvitation_(spreadsheet, data);
     if (data.revision !== invitation.currentRevision) {
       throw new ApiError_('REVISION_CONFLICT');
     }
@@ -523,6 +670,7 @@ function submitResponse_(data, payloadHash, envelope) {
     const presetGuests = getPresetGuests_(spreadsheet, invitation.householdId);
     assertGuestCapacity_(presetGuests, invitation.maxGuests);
     assertExactPresetGuestIds_(presetGuests, data.guests);
+    assertMealPolicy_(invitation, data.guests);
     const attendingCount = data.guests.filter((guest) => guest.attending).length;
     if (attendingCount > invitation.maxGuests) throw new ApiError_('INVITATION_INVALID');
 
@@ -565,6 +713,10 @@ function submitResponse_(data, payloadHash, envelope) {
       householdId: invitation.householdId,
       baseRevision: invitation.currentRevision,
       targetRevision: nextRevision,
+      policy: {
+        invitationVariant: invitation.invitationVariant,
+        mealChoiceRequired: invitation.mealChoiceRequired,
+      },
       base,
       baseStateHash,
       response: {
@@ -585,7 +737,7 @@ function submitResponse_(data, payloadHash, envelope) {
           ? {
             guestId: guest.guestId,
             attending: true,
-            mealChoice: submitted.mealChoice,
+            mealChoice: invitation.mealChoiceRequired ? submitted.mealChoice : '',
             revision: nextRevision,
             updatedAt: now.toISOString(),
           }
@@ -760,7 +912,7 @@ function buildSubmitBaseState_(invitation, existingResponse, presetGuests) {
       updatedAt: toIsoTimestamp_(invitation.updatedAt),
     },
     response: existingResponse ? responseStateFromValues_(existingResponse.values) : null,
-    guests: presetGuests.map((guest) => guestStateFromValues_(guest)),
+    guests: presetGuests.map((guest) => guestStateFromValues_(guest, invitation.mealChoiceRequired)),
   };
 
   if (base.response && base.response.revision !== invitation.currentRevision) {
@@ -830,11 +982,20 @@ function readAndValidateSubmitIntent_(row) {
   if (!constantTimeEqual_(intentMac, expectedMac)) throw new Error('Submit intent MAC is invalid.');
 
   const intent = parseInternalJsonObject_(intentJson);
-  assertInternalExactKeys_(intent, [
+  const legacyIntentKeys = [
     'version', 'kind', 'requestId', 'idempotencyKey', 'payloadHash', 'householdId',
     'baseRevision', 'targetRevision', 'base', 'baseStateHash', 'response', 'guests',
     'invitation', 'audit', 'result',
-  ]);
+  ];
+  const currentIntentKeys = legacyIntentKeys.concat('policy');
+  const isLegacyIntent = arraysEqual_(Object.keys(intent).sort(), legacyIntentKeys.slice().sort());
+  if (!isLegacyIntent) assertInternalExactKeys_(intent, currentIntentKeys);
+  if (isLegacyIntent) {
+    // Legacy intents predate invitation variants. They were only valid when a
+    // meal was required for every attending guest, so this implicit policy is
+    // both backward-compatible and fail-closed.
+    intent.policy = { invitationVariant: 'day', mealChoiceRequired: true };
+  }
   if (intent.version !== PROTOCOL_VERSION_
       || intent.kind !== 'submit'
       || intent.requestId !== requestId
@@ -894,6 +1055,8 @@ function hasCompleteCompletionMaterial_(row) {
 }
 
 function validateSubmitIntentBody_(intent) {
+  assertInternalExactKeys_(intent.policy, ['invitationVariant', 'mealChoiceRequired']);
+  validateInvitationPolicy_(intent.policy.invitationVariant, intent.policy.mealChoiceRequired);
   assertInternalExactKeys_(intent.base, ['invitation', 'response', 'guests']);
   assertInternalExactKeys_(intent.base.invitation, ['householdId', 'currentRevision', 'updatedAt']);
   if (intent.base.invitation.householdId !== intent.householdId
@@ -925,12 +1088,12 @@ function validateSubmitIntentBody_(intent) {
   const baseGuestIds = new Set();
   const targetGuestIds = new Set();
   intent.base.guests.forEach((guest) => {
-    validateIntentGuest_(guest, intent.baseRevision, true);
+    validateIntentGuest_(guest, intent.baseRevision, true, intent.policy.mealChoiceRequired);
     if (baseGuestIds.has(guest.guestId)) throw new Error('Intent base guests are duplicated.');
     baseGuestIds.add(guest.guestId);
   });
   intent.guests.forEach((guest) => {
-    validateIntentGuest_(guest, intent.targetRevision, false);
+    validateIntentGuest_(guest, intent.targetRevision, false, intent.policy.mealChoiceRequired);
     if (guest.updatedAt !== intent.response.updatedAt) {
       throw new Error('Intent guest timestamp differs from the response.');
     }
@@ -1011,7 +1174,7 @@ function validateIntentResponse_(response, intent, isTarget) {
   assertCanonicalIso_(response.updatedAt);
 }
 
-function validateIntentGuest_(guest, revision, isBase) {
+function validateIntentGuest_(guest, revision, isBase, mealChoiceRequired) {
   assertInternalExactKeys_(guest, ['guestId', 'attending', 'mealChoice', 'revision', 'updatedAt']);
   if (!OPAQUE_ID_PATTERN_.test(guest.guestId) || guest.revision !== revision) {
     throw new Error('Intent guest binding is invalid.');
@@ -1021,7 +1184,8 @@ function validateIntentGuest_(guest, revision, isBase) {
       throw new Error('Initial intent guest base is invalid.');
     }
   } else if (typeof guest.attending !== 'boolean'
-      || (guest.attending && !MEAL_CHOICES_.has(guest.mealChoice))
+      || (guest.attending && mealChoiceRequired && !MEAL_CHOICES_.has(guest.mealChoice))
+      || (guest.attending && !mealChoiceRequired && guest.mealChoice !== '')
       || (!guest.attending && guest.mealChoice !== '')) {
     throw new Error('Intent guest RSVP state is invalid.');
   }
@@ -1032,6 +1196,10 @@ function inspectSubmitIntentState_(spreadsheet, intent) {
   const invitationSheet = spreadsheet.getSheetByName(SHEETS_.invitations);
   const invitationRow = findUniqueRow_(invitationSheet, 'householdId', intent.householdId);
   if (!invitationRow) throw new Error('Intent invitation is missing.');
+  const storedPolicy = invitationPolicyFromValues_(invitationRow.values);
+  if (!statesEqual_(storedPolicy, intent.policy)) {
+    throw new Error('Invitation policy differs from the authenticated submit intent.');
+  }
   const actualInvitation = invitationStateFromValues_(invitationRow.values);
   const preparedInvitation = {
     householdId: intent.householdId,
@@ -1079,7 +1247,7 @@ function inspectSubmitIntentState_(spreadsheet, intent) {
     const row = guestRowsById.get(targetGuest.guestId);
     if (!row) throw new Error('Intent guest row is missing.');
     return classifyIntentState_(
-      guestStateFromValues_(row.values),
+      guestStateFromValues_(row.values, intent.policy.mealChoiceRequired),
       baseGuestsById.get(targetGuest.guestId),
       targetGuest,
       `Guest ${targetGuest.guestId}`,
@@ -1221,11 +1389,14 @@ function assertStoredResponseTextValid_(response) {
   }
 }
 
-function guestStateFromValues_(values) {
+function guestStateFromValues_(values, mealChoiceRequired) {
   const attending = values.attending === '' ? null : asBooleanStrict_(values.attending);
   const mealChoice = String(values.mealChoice || '');
-  if (attending === true && !MEAL_CHOICES_.has(mealChoice)) {
+  if (attending === true && mealChoiceRequired && !MEAL_CHOICES_.has(mealChoice)) {
     throw new Error('Stored attending guest has an invalid meal choice.');
+  }
+  if (attending === true && !mealChoiceRequired && mealChoice !== '') {
+    throw new Error('Stored evening guest unexpectedly has a meal choice.');
   }
   if (attending !== true && mealChoice !== '') {
     throw new Error('Stored absent or unanswered guest has a meal choice.');
@@ -1282,20 +1453,32 @@ function assertCanonicalIso_(value) {
   }
 }
 
-function getActiveInvitation_(spreadsheet, tokenHash) {
-  const invitation = getInvitationByTokenHash_(spreadsheet, tokenHash);
+function getActiveInvitation_(spreadsheet, credential) {
+  const invitation = getInvitationByCredentialHash_(spreadsheet, credential);
   if (!invitation.active) throw new ApiError_('INVITATION_INVALID');
   return invitation;
 }
 
-function getInvitationByTokenHash_(spreadsheet, tokenHash) {
-  const row = findUniqueRow_(spreadsheet.getSheetByName(SHEETS_.invitations), 'tokenHash', tokenHash);
+function getInvitationByCredentialHash_(spreadsheet, credential) {
+  const hasTokenHash = Object.prototype.hasOwnProperty.call(credential, 'tokenHash');
+  const hasAccessCodeHash = Object.prototype.hasOwnProperty.call(credential, 'accessCodeHash');
+  if (hasTokenHash === hasAccessCodeHash) throw new ApiError_('INVITATION_INVALID');
+  const columnName = hasTokenHash ? 'tokenHash' : 'accessCodeHash';
+  const expectedHash = hasTokenHash ? credential.tokenHash : credential.accessCodeHash;
+  const row = findUniqueRow_(spreadsheet.getSheetByName(SHEETS_.invitations), columnName, expectedHash);
   if (!row) throw new ApiError_('INVITATION_INVALID');
 
+  const tokenHash = normalizeStoredCredentialHash_(row.values.tokenHash, true);
+  const accessCodeHash = normalizeStoredCredentialHash_(row.values.accessCodeHash, true);
+  if (tokenHash === '' && accessCodeHash === '') throw new Error('Invitation has no credential hash.');
+  const policy = invitationPolicyFromValues_(row.values);
   return {
     rowNumber: row.rowNumber,
     householdId: normalizeOpaqueId_(row.values.householdId),
+    tokenHash,
+    accessCodeHash,
     displayName: normalizeStoredDisplayName_(row.values.displayName),
+    ...policy,
     maxGuests: asInteger_(row.values.maxGuests, 1, 20),
     active: asBoolean_(row.values.active),
     currentRevision: row.values.currentRevision === ''
@@ -1339,7 +1522,7 @@ function getCurrentRsvp_(spreadsheet, invitation, presetGuests) {
   if (invitation.currentRevision === 0) {
     if (response) throw new Error('Initial invitation unexpectedly has a response row.');
     for (const guest of presetGuests) {
-      const state = guestStateFromValues_(guest);
+      const state = guestStateFromValues_(guest, invitation.mealChoiceRequired);
       if (state.revision !== 0
           || state.attending !== null
           || state.mealChoice !== ''
@@ -1363,14 +1546,16 @@ function getCurrentRsvp_(spreadsheet, invitation, presetGuests) {
   assertStoredResponseTextValid_(storedResponse);
 
   const guests = presetGuests.map((guest) => {
-    const state = guestStateFromValues_(guest);
+    const state = guestStateFromValues_(guest, invitation.mealChoiceRequired);
     if (state.revision !== invitation.currentRevision
         || typeof state.attending !== 'boolean'
         || state.updatedAt === '') {
       throw new Error('GuestDetails does not match the current revision.');
     }
     if (state.attending) {
-      return { guestId: guest.guestId, attending: true, mealChoice: state.mealChoice };
+      return invitation.mealChoiceRequired
+        ? { guestId: guest.guestId, attending: true, mealChoice: state.mealChoice }
+        : { guestId: guest.guestId, attending: true };
     }
     return { guestId: guest.guestId, attending: false };
   });
@@ -1406,6 +1591,32 @@ function assertExactPresetGuestIds_(presetGuests, submittedGuests) {
   if (submittedGuests.some((guest) => !presetIds.has(guest.guestId))) {
     throw new ApiError_('INVITATION_INVALID');
   }
+}
+
+function assertMealPolicy_(invitation, submittedGuests) {
+  for (const guest of submittedGuests) {
+    if (!guest.attending) continue;
+    const hasMealChoice = typeof guest.mealChoice === 'string';
+    if ((invitation.mealChoiceRequired && !hasMealChoice)
+        || (!invitation.mealChoiceRequired && hasMealChoice)) {
+      throw new ApiError_('INVITATION_INVALID');
+    }
+  }
+}
+
+function validateInvitationPolicy_(invitationVariant, mealChoiceRequired) {
+  if (!INVITATION_VARIANTS_.has(invitationVariant)
+      || typeof mealChoiceRequired !== 'boolean'
+      || (invitationVariant === 'day') !== mealChoiceRequired) {
+    throw new Error('Invitation variant and meal policy are invalid.');
+  }
+  return { invitationVariant, mealChoiceRequired };
+}
+
+function invitationPolicyFromValues_(values) {
+  const invitationVariant = String(values.invitationVariant || '').trim();
+  const mealChoiceRequired = asBooleanStrict_(values.mealChoiceRequired);
+  return validateInvitationPolicy_(invitationVariant, mealChoiceRequired);
 }
 
 function generateReceiptNumber_(responsesSheet) {
@@ -1622,6 +1833,13 @@ function normalizeTokenHash_(value) {
     throw new ApiError_('INVITATION_INVALID');
   }
   return value;
+}
+
+function normalizeStoredCredentialHash_(value, allowEmpty) {
+  const normalized = String(value === undefined || value === null ? '' : value).trim();
+  if (allowEmpty && normalized === '') return '';
+  if (!TOKEN_HASH_PATTERN_.test(normalized)) throw new Error('Stored credential hash is invalid.');
+  return normalized;
 }
 
 function normalizeOpaqueId_(value) {

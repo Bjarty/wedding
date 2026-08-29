@@ -1,10 +1,7 @@
 export interface RsvpConfig {
   apiBaseUrl: string;
   turnstileSiteKey: string;
-}
-
-interface RsvpImportMeta extends ImportMeta {
-  readonly env?: RsvpEnvironment;
+  householdCodesEnabled: boolean;
 }
 
 export interface RsvpEnvironment {
@@ -12,6 +9,7 @@ export interface RsvpEnvironment {
   readonly VITE_RSVP_ENABLED?: string;
   readonly VITE_RSVP_API_BASE_URL?: string;
   readonly VITE_TURNSTILE_SITE_KEY?: string;
+  readonly VITE_RSVP_HOUSEHOLD_CODES_ENABLED?: string;
 }
 
 const normalizeApiBaseUrl = (value: string | undefined, allowLocalhost: boolean): string | null => {
@@ -46,8 +44,12 @@ export const parseRsvpConfig = (env: RsvpEnvironment | undefined): RsvpConfig | 
   const turnstileSiteKey = env?.VITE_TURNSTILE_SITE_KEY?.trim();
 
   if (apiBaseUrl === null || turnstileSiteKey === undefined || turnstileSiteKey === '') return null;
-  return { apiBaseUrl, turnstileSiteKey };
+  return {
+    apiBaseUrl,
+    turnstileSiteKey,
+    householdCodesEnabled: env.VITE_RSVP_HOUSEHOLD_CODES_ENABLED === 'true',
+  };
 };
 
 export const getRsvpConfig = (): RsvpConfig | null =>
-  parseRsvpConfig((import.meta as RsvpImportMeta).env);
+  parseRsvpConfig(import.meta.env);

@@ -1,123 +1,201 @@
-# Uitnodigingen met één gedeelde QR-code
+# Uitnodigingen met één gedeelde QR en persoonlijke codes
 
-## Aanbevolen model
+## Definitief model
 
-Gebruik één gedeelde QR-code op alle uitnodigingen. Deze verwijst uitsluitend
-naar `https://lisetteenbjarty.nl/#rsvp` en bevat geen naam, gasttype of geheim.
-Print daarnaast op iedere uitnodiging één unieke, hoofdletterongevoelige code
-per huishouden, bijvoorbeeld `7K3M-P9TW-X4HC-Q2RD`.
+Gebruik op alle fysieke uitnodigingen dezelfde QR-code. Deze verwijst exact
+naar:
 
-Na het scannen voert de gast die code in. De backend zoekt het huishouden op en
-geeft uitsluitend de vooraf ingestelde namen en uitnodigingsvariant terug. De
-variant staat in de private Sheet en is bijvoorbeeld:
+```text
+https://lisetteenbjarty.nl/#rsvp
+```
 
-- `day`: het volledige programma en een maaltijdkeuze per aanwezige gast;
-- `evening`: alleen de avondinformatie en geen maaltijdkeuze.
+De QR bevat geen naam, gasttype, code of ander geheim. Iedere uitnodiging krijgt
+daarnaast als gewone tekst één unieke code van vier groepen van vijf tekens.
+De gast scant de QR, voert de code in en ziet daarna alleen het vooraf
+ingerichte huishouden:
 
-De website mag de variant nooit uit de QR-code, URL of formulierinvoer
-vertrouwen. Ook wanneer iemand de avond-URL verandert in een dag-URL, bepaalt
-de backend nog steeds welke informatie en vragen bij het huishouden horen.
+- `day`: welkom vanaf 14.30 uur en een maaltijdkeuze per aanwezige gast;
+- `evening`: welkom vanaf 20.00 uur en geen maaltijdvraag.
 
-## Waarom één QR-code plus een persoonlijke code
+De private Sheet is leidend. De QR, URL en browser mogen de variant of
+maaltijdregel niet bepalen.
 
-- Er hoeven maar één QR-afbeelding en één algemene uitleg te worden gedrukt.
-- Namen zijn niet openbaar doorzoekbaar en hoeven niet in een URL te staan.
-- Een code kan per huishouden worden ingetrokken of vervangen.
-- Eén huishouden behoudt dezelfde code voor een latere wijziging van de RSVP.
-- Dag- en avondrechten blijven centraal en server-side beheerd.
+## Een code veilig genereren
 
-Een tweede gedeelde QR-code voor avondgasten is optioneel. Deze mag alleen een
-andere introductietekst openen, bijvoorbeeld `#rsvp/avond`; na invoer van de
-persoonlijke code wint altijd de server-side uitnodigingsvariant. Twee QR-codes
-geven dus gemak, geen extra toegangsrecht.
+Vereist: Node.js 22 en dezelfde `ACCESS_CODE_HASH_SECRET` van exact 64
+base64url-tekens als de bijbehorende Worker-omgeving. Gebruik voor test en
+productie verschillende secrets. Haal het secret lokaal op via een beveiligde,
+niet-gelogde methode en maak het alleen tijdelijk beschikbaar als
+`ACCESS_CODE_HASH_SECRET`; zet de waarde nooit in een commando, document,
+chatbericht, screenshot of repositorybestand.
 
-Volledig gedeelde QR-codes zonder een persoonlijke code kunnen huishoudens niet
-veilig onderscheiden. Een zoekfunctie op naam, e-mailadres of postcode wordt
-niet gebruikt: die gegevens zijn te raden, kunnen dubbele resultaten geven en
-maken het mogelijk de gastenlijst te onderzoeken.
+Genereer dit secret één keer per omgeving, bewaar het in de afgesproken
+passwordmanager/secretkluis en configureer dezelfde waarde als encrypted
+Worker-secret. Cloudflare toont een opgeslagen secret later niet opnieuw. Bij
+verlies of rotatie veranderen alle codehashes en moeten alle nog actieve codes
+opnieuw worden gegenereerd en uitgegeven.
 
-## Praktisch drukwerk
+Kies vooraf twee nog niet bestaande doelbestanden in een bestaande beveiligde
+map **buiten de repository**:
 
-- Maak één definitieve QR-afbeelding van de stabiele site-URL en gebruik die in
-  iedere drukwerkvariant.
-- Voeg de persoonlijke code als gewone tekst toe via mail merge. Zo blijven er
-  één QR-bestand en hoogstens twee kaarttemplates over, terwijl iedere kaart wel
-  veilig aan een huishouden is gekoppeld.
-- Zet onder de QR ook de korte site-URL en de tekst “Gebruik daarna jullie
-  persoonlijke code”, zodat een gast ook zonder werkende camera verder kan.
-- Encodeer de huishoudcode niet in de gedeelde QR; dan zou alsnog voor ieder
-  huishouden een andere QR nodig zijn.
-- Test één gedrukte proef op meerdere telefoons en bij matig licht voordat alle
-  uitnodigingen worden besteld.
+- `--sheet-out`: hash en metadata voor de private RSVP-Sheet;
+- `--delivery-out`: de leesbare code voor de fysieke uitnodiging/mail merge.
 
-## Minimale beveiliging
+Voorbeeld met uitsluitend placeholders:
 
-- Genereer codes offline uit minimaal 80 bits cryptografische willekeur en
-  formatteer ze als vier groepen van vier Crockford-Base32-tekens.
-- Bewaar in de Sheet alleen een keyed hash onder een afzonderlijk secret; nooit
-  de leesbare code.
-- Bewaar de koppeling tussen huishouden en leesbare code uitsluitend in een
-  versleuteld distributiebestand buiten Git, Sheets, CI, chat en logs.
-- Verstuur de code nooit in een queryparameter. De gast voert hem na het scannen
-  handmatig in; de browser houdt hem alleen zo lang als nodig in geheugen.
-- Gebruik Turnstile, limieten per keyed codefingerprint, per tijdelijke client-
-  of netwerksleutel en voor het endpoint als geheel. Vertrouw niet uitsluitend
-  op een IP-adres. Gebruik daarnaast een langere tijdelijke blokkade na
-  herhaalde fouten en één generieke foutmelding voor onbekende, ingetrokken of
-  verkeerd getypte codes.
-- Log geen code, codehash, naam of uitnodigingsvariant.
-- Maak codes intrekbaar en geef een vervangen code nooit opnieuw uit.
+```powershell
+$env:ACCESS_CODE_HASH_SECRET = Read-Host -MaskInput 'Access-code hashsecret uit de secretkluis'
+try {
+  npm run provision:household-code -- `
+    --household-id hh_familie_voorbeeld `
+    --display-name "Familie Voorbeeld" `
+    --invitation-variant day `
+    --max-guests 2 `
+    --sheet-out "C:\beveiligd\rsvp\hh_familie_voorbeeld-sheet.json" `
+    --delivery-out "C:\beveiligd\rsvp\hh_familie_voorbeeld-uitgifte.json"
+} finally {
+  Remove-Item Env:ACCESS_CODE_HASH_SECRET -ErrorAction SilentlyContinue
+}
+```
 
-## Gegevensmodel
+De doelmap moet al bestaan. De helper:
 
-Breid `Invitations` in een volgende, afzonderlijke migratie uit met:
+- gebruikt cryptografische willekeur en het alfabet zonder `0`, `1`, `I`, `L`,
+  `O` en `U`;
+- weigert de publieke lokale demo-code;
+- berekent de domeingescheiden keyed hash;
+- schrijft met exclusieve bestandscreatie en overschrijft nooit een bestand;
+- schrijft de leesbare code niet naar stdout;
+- weigert ieder uitvoerpad binnen de repository.
 
-| Veld | Betekenis |
+Verwijder `ACCESS_CODE_HASH_SECRET` direct na de run uit de lokale
+procesomgeving. Genereer bij heruitgifte een nieuwe code en trek de oude hash
+in; geef een oude code nooit opnieuw uit.
+
+## Twee strikt gescheiden outputs
+
+Het `sheet-out`-bestand bevat metadata zonder leesbare code. Neem uit dit
+bestand alleen de velden voor de `Invitations`-rij over; `schemaVersion` is
+metadata en geen Sheet-kolom. Het bestand bevat onder meer:
+
+- `householdId`;
+- lege `tokenHash` en de 43 tekens lange `accessCodeHash`;
+- `displayName`, `invitationVariant`, `mealChoiceRequired` en `maxGuests`;
+- `active=true`, `currentRevision=0`, `createdAt` en `updatedAt`.
+
+Het `delivery-out`-bestand bevat de gedeelde RSVP-URL én de leesbare code. Dit
+is het enige bestand dat voor het personaliseren van drukwerk wordt gebruikt.
+Bewaar het versleuteld en beperkt toegankelijk buiten Git, cloud-sync,
+Google Sheets, CI, tickets en chat. Als een drukker of mail merge tijdelijk een
+Excel-/CSV-bestand vereist, maak dat lokaal uit de uitgiftebestanden, deel
+uitsluitend via een afgesproken beveiligd kanaal en verwijder de tijdelijke
+kopieën na controle en druk.
+
+Een leesbare code of `ACCESS_CODE_HASH_SECRET` komt nooit in de RSVP-Sheet. Een
+codehash komt juist alleen in de private Sheet en is niet geschikt voor het
+drukwerk.
+
+## Huishouden en namen beheren
+
+Initialiseer eerst de private Sheet met `initSheet()` volgens
+[`apps-script/README.md`](./apps-script/README.md). Beheer daarna:
+
+| Tab/veld | Wat verschijnt of wordt afgedwongen |
 | --- | --- |
-| `accessCodeHash` | Keyed hash van de persoonlijke code |
-| `invitationVariant` | Exact `day` of `evening` |
-| `mealChoiceRequired` | Boolean, normaal `TRUE` voor dag en `FALSE` voor avond |
-| `active` | Bestaande intrekbare status |
-| `currentRevision` | Bestaande revisie voor conflictbeveiliging |
+| `Invitations.displayName` | Huishoudnaam boven het formulier |
+| `Invitations.invitationVariant` | Exact `day` of `evening` |
+| `Invitations.mealChoiceRequired` | Echte `TRUE` bij `day`, echte `FALSE` bij `evening` |
+| `Invitations.maxGuests` | Maximaal aantal aanwezigen; minstens het aantal vooraf ingestelde gasten |
+| `Invitations.active` | `FALSE` trekt de code onmiddellijk backend-side in |
+| `Invitations.accessCodeHash` | Hash uit het private `sheet-out`-bestand; nooit de leesbare code |
+| `GuestDetails.displayName` | Persoonsnaam die na geldige code-invoer verschijnt |
+| `GuestDetails.guestId` | Stabiele, unieke ID; nooit aan de browser laten kiezen |
 
-De backend retourneert de variant en toegestane velden pas na een geldige
-code. Bij submit controleert de backend of writer opnieuw de opgeslagen variant;
-een clientwaarde mag maaltijdregels of programma nooit verruimen.
+Maak per huishouden exact één `Invitations`-rij en één `GuestDetails`-rij per
+uitgenodigde persoon. Nieuwe gastregels starten met `revision=0`; `attending`,
+`mealChoice` en `updatedAt` blijven leeg. `Responses`, `Idempotency` en `Audit`
+worden niet handmatig gevuld.
 
-De huidige site bevat het volledige dagprogramma nog in de publieke
-JavaScriptbundle. Verschillende RSVP-vragen kunnen veilig per variant worden
-afgedwongen, maar het dagprogramma is daarmee nog niet geheim voor avondgasten.
-Als dat programma afgeschermd moet worden, moet de backend na authenticatie ook
-de toegestane programmatekst leveren en mag de afgeschermde tekst niet statisch
-in de repository of bundle staan.
+Richt namen, variant, maaltijdbeleid en capaciteit in vóór verspreiding en vóór
+de eerste reactie. Wijzig `householdId`, `guestId`, credentialhashes of revision
+nooit bij een bestaand antwoord. Stop bij een noodzakelijke latere
+beleids-/gastenwijziging eerst backend-writes, herstel pending intents en volg
+een apart beoordeelde datamigratie; handmatig wisselen tussen dag en avond kan
+een bestaande reactie bewust fail-closed maken.
 
-## UX-stroom
+Publieke formulierteksten staan niet in de Sheet:
 
-1. Gast scant de gedeelde QR-code.
-2. De site vraagt: “Vul de code van jullie uitnodiging in.”
-3. Na Turnstile en servercontrole verschijnen uitsluitend de juiste namen.
-4. Daggasten zien het volledige programma en maaltijdkeuzes.
-5. Avondgasten zien hun eigen aanvangstijd en krijgen geen maaltijdvraag.
-6. Na opslag verschijnt hetzelfde stabiele ontvangstnummer als in de huidige
-   RSVP-foundation; met dezelfde code kan de reactie later worden gewijzigd.
+- variantlabels en aankomstteksten: `src/content/siteContent.ts`, onder
+  `rsvp.form.dayVariantLabel`, `dayArrivalMessage`, `eveningVariantLabel` en
+  `eveningArrivalMessage`;
+- algemene planning, locatie en overige site-inhoud: eveneens
+  `src/content/siteContent.ts`.
 
-Maak de code geschikt voor plakken, verwijder spaties en streepjes alleen voor
-normalisatie en toon een duidelijke `O/0`- en `I/1`-vrije voorbeeldcode. Laat de
-site nooit bevestigen dat een gedeeltelijk ingevoerde code of naam bestaat.
+De volledige publieke dagplanning zit in de statische sitebundle en is dus niet
+geheim voor technisch onderzoek. De Sheet bepaalt wel welke RSVP-vragen en
+aankomstmelding de normale gastflow toont.
 
-## Gefaseerde invoering
+## Eerste reactie en later wijzigen
 
-1. Behoud de huidige persoonlijke fragmentlinks als werkende en geteste basis.
-2. Voeg schema, provisioning en tests eerst toe aan een nieuwe private
-   test-Sheet; wijzig de bestaande testdata niet handmatig.
-3. Voeg aparte resolve- en submitondersteuning voor toegangscodes toe achter een
-   standaard uitgeschakelde featureflag.
-4. Test minimaal dag, avond, verkeerde QR-hint, ingetrokken code, typefout,
-   brute-forcebegrenzing, retry, conflict, revisiewijziging en heruitgifte.
-5. Maak daarna pas een versleuteld mail-mergebestand met echte namen en codes.
-6. Activeer productie pas na beoordeling van de gedrukte proef, backendregels,
-   privacytekst, rate limits en herstelprocedure.
+Bij iedere code-invoer doet de site opnieuw een server-side resolve. Bestaat al
+een reactie, dan retourneert de writer de actuele `revision`, keuzes en het
+stabiele ontvangstnummer. Het formulier wordt daarmee opnieuw gevuld. Een
+wijziging gebruikt dezelfde persoonlijke code, een nieuwe idempotency key en
+de actuele revision; na opslag wordt de revision precies één hoger terwijl het
+ontvangstnummer gelijk blijft.
 
-Deze wijziging hoort in een aparte implementatie-PR. De huidige foundation
-blijft ondertussen fail-closed en gebruikt alleen de al geteste persoonlijke
-fragmenttokens.
+De code wordt niet permanent in de browser opgeslagen. Na sluiten of herladen
+voert de gast haar opnieuw in. Een verouderd gelijktijdig formulier krijgt
+`REVISION_CONFLICT` en moet eerst opnieuw resolven; zo overschrijft een oude
+pagina geen nieuwere reactie.
+
+## Drukwerkcontrole
+
+- Gebruik één QR-afbeelding en zet er ook `lisetteenbjarty.nl` plus “Gebruik
+  daarna jullie persoonlijke code” bij.
+- Encodeer de persoonlijke code niet in de QR.
+- Personaliseer alleen de gedrukte coderegel vanuit het private
+  uitgiftebestand.
+- Controleer vóór alle druk: één fictieve dagcode, één fictieve avondcode,
+  meerdere telefoons, matig licht en handmatige invoer zonder camera.
+- Provision de zichtbare lokale Familie Garcia-demo-code nooit in test of
+  productie.
+
+## Test- en productieactivering
+
+Test eerst end-to-end met uitsluitend synthetische gegevens: resolve via de
+gedeelde QR, eerste submit, opnieuw openen met dezelfde code, een wijziging,
+dag- en avondbeleid, typefout, ingetrokken code, rate limiting, retry en
+revisionconflict. Controleer de juiste rijen in `Responses`, `GuestDetails`,
+`Idempotency` en `Audit` en bevestig dat nergens een leesbare code of secret
+staat.
+
+Maak daarna afzonderlijke productieresources; hergebruik niets uit test:
+
+1. nieuwe private productie-Sheet en nieuw Apps Script-project/deployment;
+2. nieuwe productie-Worker en Turnstile-widget;
+3. nieuwe `WRITER_HMAC_SECRET`, `INVITATION_TOKEN_HASH_SECRET` en
+   `ACCESS_CODE_HASH_SECRET`;
+4. vier nieuwe rate-limit namespaces: global, client, resolve en submit;
+5. productiehuishoudens en gasten uit de private provisioningoutputs;
+6. Worker-var `HOUSEHOLD_CODES_ENABLED=true` pas nadat writer, schema en data
+   zijn gecontroleerd;
+7. upload en deploy eerst de beoordeelde Worker-versie zonder publieke route;
+   koppel daarna expliciet één beoordeeld HTTPS-endpoint volgens het
+   [productierunbook](./worker/README.md#fail-closed-productieactivering). Gebruik
+   aanvankelijk bij voorkeur het productie-`workers.dev`-endpoint zodat TransIP-
+   DNS en mailrecords niet wijzigen;
+8. GitHub Actions-repositoryvariabelen
+   `VITE_RSVP_ENABLED=true`,
+   `VITE_RSVP_HOUSEHOLD_CODES_ENABLED=true`,
+   `VITE_RSVP_API_BASE_URL` en `VITE_TURNSTILE_SITE_KEY`;
+9. een beoordeelde Pages-build en een laatste productie-smoketest.
+
+De Worker- en frontendvlag zijn twee aparte veiligheidsgrenzen. Alleen de
+frontend verbergen stopt een bestaande client niet; gebruik voor een echte
+stop het backend-stoprunbook in
+[`apps-script/README.md`](./apps-script/README.md#backend-stop-en-rollback).
+
+Voer geen productieactivatie uit vanuit deze documentatiewijziging. Laat eerst
+de code-diff, testresultaten, Sheet-migratie en exacte externe stappen
+beoordelen.

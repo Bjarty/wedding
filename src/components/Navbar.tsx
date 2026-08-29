@@ -1,16 +1,10 @@
 import { motion, useScroll, useTransform } from 'motion/react';
 import { Heart } from 'lucide-react';
 import { useState, useEffect } from 'react';
-
-const navItems = [
-  { label: 'Story', href: '#story' },
-  { label: 'Schedule', href: '#schedule' },
-  { label: 'Location', href: '#location' },
-  { label: 'Honeymoon', href: '#honeymoon' },
-  { label: 'RSVP', href: '#rsvp' },
-];
+import { siteContent } from '../content/siteContent';
 
 export default function Navbar() {
+  const { navigation } = siteContent;
   const { scrollY } = useScroll();
   const [isScrolled, setIsScrolled] = useState(false);
 
@@ -45,13 +39,13 @@ export default function Navbar() {
           whileHover={{ scale: 1.05 }}
         >
           <Heart className="w-5 h-5 text-gold fill-gold" />
-          <span className="font-serif text-xl tracking-widest uppercase">A & B</span>
+          <span className="font-serif text-xl tracking-widest uppercase">{navigation.monogram}</span>
         </motion.div>
 
         <div className="hidden md:flex items-center gap-12">
-          {navItems.map((item) => (
+          {navigation.items.map((item) => (
             <motion.a
-              key={item.label}
+              key={item.id}
               href={item.href}
               onClick={(e) => {
                 e.preventDefault();
@@ -77,11 +71,11 @@ export default function Navbar() {
         </div>
 
         <motion.a
-          href="#rsvp"
+          href={navigation.ctaHref}
           className="bg-stone-dark text-cream px-10 py-3.5 rounded-full text-[10px] uppercase tracking-[0.3em] font-bold hover:bg-gold transition-all shadow-xl active:scale-95 border border-gold/20"
           whileHover={{ scale: 1.05 }}
         >
-          RSVP Now
+          {navigation.ctaLabel}
         </motion.a>
       </div>
     </motion.nav>

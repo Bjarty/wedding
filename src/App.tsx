@@ -6,6 +6,7 @@ import Schedule from './components/Schedule';
 import DressCode from './components/DressCode';
 import Location from './components/Location';
 import HoneymoonTracker from './components/HoneymoonTracker';
+import GiftTips from './components/GiftTips';
 import RSVPForm from './components/RSVPForm';
 import Footer from './components/Footer';
 import { siteContent } from './content/siteContent';
@@ -35,6 +36,7 @@ export default function App() {
         <DressCode />
         <Location />
         {siteContent.honeymoon.enabled && <HoneymoonTracker />}
+        {siteContent.gifts.enabled && <GiftTips />}
         <RSVPForm />
       </main>
 

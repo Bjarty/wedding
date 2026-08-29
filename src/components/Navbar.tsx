@@ -55,7 +55,7 @@ export default function Navbar() {
           <span className="font-serif text-xl tracking-widest uppercase">{navigation.monogram}</span>
         </motion.div>
 
-        <div className="hidden md:flex items-center gap-12">
+        <div className="hidden lg:flex items-center gap-12">
           {navigation.items.map((item) => (
             <motion.a
               key={item.id}
@@ -76,7 +76,7 @@ export default function Navbar() {
             aria-expanded={isMenuOpen}
             aria-controls="mobile-navigation"
             onClick={() => setIsMenuOpen((isOpen) => !isOpen)}
-            className="flex h-11 w-11 items-center justify-center rounded-full border border-stone-dark/10 bg-cream/80 text-stone-dark shadow-sm outline-none transition-colors hover:text-gold focus-visible:ring-4 focus-visible:ring-gold/30 md:hidden"
+            className="flex h-11 w-11 items-center justify-center rounded-full border border-stone-dark/10 bg-cream/80 text-stone-dark shadow-sm outline-none transition-colors hover:text-gold focus-visible:ring-4 focus-visible:ring-gold/30 lg:hidden"
           >
             {isMenuOpen
               ? <X aria-hidden="true" className="h-5 w-5" />
@@ -86,7 +86,7 @@ export default function Navbar() {
           <motion.a
             href={navigation.ctaHref}
             onClick={() => setIsMenuOpen(false)}
-            className="bg-stone-dark text-cream px-6 md:px-10 py-3.5 rounded-full text-[10px] uppercase tracking-[0.3em] font-bold hover:bg-gold transition-all shadow-xl active:scale-95 border border-gold/20"
+            className="bg-stone-dark text-cream px-6 lg:px-10 py-3.5 rounded-full text-[10px] uppercase tracking-[0.3em] font-bold hover:bg-gold transition-all shadow-xl active:scale-95 border border-gold/20"
             whileHover={{ scale: 1.05 }}
           >
             {navigation.ctaLabel}
@@ -99,7 +99,7 @@ export default function Navbar() {
           id="mobile-navigation"
           initial={{ opacity: 0, y: -8 }}
           animate={{ opacity: 1, y: 0 }}
-          className="absolute left-6 right-6 top-full mt-2 rounded-3xl border border-stone-dark/10 bg-cream/95 p-3 shadow-2xl backdrop-blur-xl md:hidden"
+          className="absolute left-6 right-6 top-full mt-2 max-h-[calc(100vh-7rem)] overflow-y-auto overscroll-contain rounded-3xl border border-stone-dark/10 bg-cream/95 p-3 shadow-2xl backdrop-blur-xl lg:hidden"
         >
           {navigation.items.map((item) => (
             <a

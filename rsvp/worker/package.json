@@ -7,9 +7,13 @@
     "build": "tsc -p tsconfig.json",
     "check": "tsc --noEmit -p tsconfig.json",
     "test": "npm run build && node --test test/*.test.mjs",
-    "provision:invitation": "node scripts/provision-invitation.mjs"
+    "provision:invitation": "node scripts/provision-invitation.mjs",
+    "validate:test-config": "node scripts/validate-test-config.mjs --template wrangler.test.toml",
+    "validate:test-config:local": "node scripts/validate-test-config.mjs wrangler.test.local.toml",
+    "upload:test": "node scripts/upload-test.mjs"
   },
   "devDependencies": {
-    "typescript": "~5.8.2"
+    "typescript": "~5.8.2",
+    "wrangler": "4.126.0"
   }
 }

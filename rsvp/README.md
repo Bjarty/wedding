@@ -32,6 +32,12 @@ Versie 2 kan een bevestiging versturen vanaf
 Google-account als geverifieerd afzenderadres is ingesteld en een end-to-end
 test SPF, DKIM, DMARC, antwoordadres en bezorging heeft gecontroleerd.
 
+Voor de latere verspreiding met één gedeelde QR-code en een persoonlijke code
+per huishouden staat het beveiligings- en UX-ontwerp in
+[`INVITATION-DISTRIBUTION.md`](./INVITATION-DISTRIBUTION.md). Dit document is
+nog geen activatie: de huidige versie blijft persoonlijke fragmentlinks
+gebruiken totdat de aparte migratie is gebouwd en volledig getest.
+
 ## Veilige activeringsvolgorde
 
 1. Beoordeel en merge alleen de lokale foundation en de tests.

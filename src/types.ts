@@ -57,6 +57,24 @@ export interface HoneymoonStop {
   icon: HoneymoonIcon;
 }
 
+export interface GiftContribution {
+  id: string;
+  title: string;
+  location: string;
+  description: string;
+  ctaLabel: string;
+  amountLabel?: string;
+  recipientLabel?: string;
+  paymentHref?: `https://${string}`;
+}
+
+export interface PaymentProvider {
+  name: string;
+  origin: `https://${string}`;
+  paymentPathPrefix: `/${string}`;
+  privacyHref: `https://${string}`;
+}
+
 export interface SiteContent {
   metadata: {
     language: string;
@@ -150,6 +168,26 @@ export interface SiteContent {
     quote: string;
     startDate: string;
     stops: HoneymoonStop[];
+  };
+  gifts: {
+    enabled: boolean;
+    sectionId: string;
+    eyebrow: string;
+    heading: string;
+    introduction: string[];
+    routeHeading: string;
+    travelDates: string;
+    route: string[];
+    contributionsEyebrow: string;
+    contributionsHeading: string;
+    contributions: GiftContribution[];
+    paymentLinksEnabled: boolean;
+    paymentProvider: PaymentProvider | null;
+    paymentUnavailableLabel: string;
+    externalPaymentNote: string;
+    thanksHeading: string;
+    thanksText: string[];
+    signature: string;
   };
   rsvp: {
     sectionId: string;

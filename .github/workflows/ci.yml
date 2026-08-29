@@ -27,6 +27,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Install pinned Worker deployment tooling
+        run: npm ci --prefix rsvp/worker
+
       - name: Check types, content and RSVP
         run: npm run check
 

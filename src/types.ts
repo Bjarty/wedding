@@ -12,7 +12,7 @@ export interface StoryItem {
   image: string;
 }
 
-export type ScheduleIcon = 'sparkles' | 'utensils' | 'music';
+export type ScheduleIcon = 'clock' | 'heart' | 'cake' | 'utensils' | 'users' | 'music';
 
 export interface ScheduleItem {
   id: string;
@@ -23,14 +23,20 @@ export interface ScheduleItem {
   icon: ScheduleIcon;
 }
 
-export type TravelIcon = 'plane' | 'train' | 'car' | 'map';
+export type TravelIcon = 'car' | 'parking' | 'bed' | 'taxi';
 
 export interface TravelOption {
   id: string;
   title: string;
   description: string;
   icon: TravelIcon;
-  variant: 'default' | 'maps';
+}
+
+export interface DressCodeColor {
+  id: string;
+  label: string;
+  color: `#${string}`;
+  foreground: 'light' | 'dark';
 }
 
 export type HoneymoonIcon = 'sun' | 'wind' | 'camera' | 'map-pin';
@@ -50,6 +56,35 @@ export interface SiteContent {
     language: string;
     title: string;
   };
+  event: {
+    couple: {
+      firstName: string;
+      secondName: string;
+      displayName: string;
+      monogram: string;
+    };
+    date: {
+      iso: `${number}-${number}-${number}`;
+      display: string;
+    };
+    timeZone: string;
+    place: string;
+    venue: {
+      roomName: string;
+      organisationName: string;
+      address: string;
+      mapsUrl: string;
+    };
+    rsvpDeadline: {
+      iso: `${number}-${number}-${number}`;
+      display: string;
+    };
+  };
+  contacts: {
+    generalEmail: string;
+    rsvpEmail: string;
+    giftsEmail: string;
+  };
   navigation: {
     monogram: string;
     items: NavItem[];
@@ -64,6 +99,7 @@ export interface SiteContent {
     scrollLabel: string;
   };
   story: {
+    enabled: boolean;
     sectionId: string;
     heading: string;
     introduction: string;
@@ -77,17 +113,28 @@ export interface SiteContent {
     dateLine: string;
     events: ScheduleItem[];
   };
+  dressCode: {
+    sectionId: string;
+    eyebrow: string;
+    heading: string;
+    introduction: string;
+    colorsLabel: string;
+    colors: DressCodeColor[];
+    printNote: string;
+  };
   location: {
     sectionId: string;
-    image: string;
-    imageAlt: string;
     venueName: string;
+    venueContext: string;
     address: string;
+    mapHref: string;
+    mapLabel: string;
     heading: string;
     introduction: string;
     travelOptions: TravelOption[];
   };
   honeymoon: {
+    enabled: boolean;
     sectionId: string;
     eyebrow: string;
     headingLineOne: string;
@@ -101,28 +148,12 @@ export interface SiteContent {
     headingPrefix: string;
     headingEmphasis: string;
     deadline: string;
-    nameLabel: string;
-    namePlaceholder: string;
-    emailLabel: string;
-    emailPlaceholder: string;
-    attendanceLabel: string;
-    attendance: {
-      yes: { value: 'yes'; label: string };
-      no: { value: 'no'; label: string };
-    };
-    guestsLabel: string;
-    messageLabel: string;
-    messagePlaceholder: string;
-    submitLabel: string;
-    successHeading: string;
-    successMessage: string;
-    resetLabel: string;
+    statusHeading: string;
+    statusMessage: string;
+    contactLabel: string;
   };
   footer: {
     coupleLabel: string;
-    socialHref: string;
-    socialLabel: string;
-    contactHref: `mailto:${string}`;
     contactLabel: string;
     copyright: string;
     credit: string;

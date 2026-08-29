@@ -25,6 +25,27 @@ export default function DressCode() {
             </p>
           </div>
 
+          <div className="mt-12" role="group" aria-labelledby="dresscode-inspiration-label">
+            <h3 id="dresscode-inspiration-label" className="sr-only">
+              {content.inspirationLabel}
+            </h3>
+            <ul className="grid grid-cols-2 gap-3 lg:grid-cols-4 lg:gap-4">
+              {content.inspiration.map((item) => (
+                <li key={item.id} className="overflow-hidden rounded-2xl border border-stone-dark/10 bg-cream shadow-sm">
+                  <img
+                    src={item.image}
+                    alt={item.alt}
+                    width="960"
+                    height="1200"
+                    loading="lazy"
+                    decoding="async"
+                    className="aspect-[4/5] w-full object-cover"
+                  />
+                </li>
+              ))}
+            </ul>
+          </div>
+
           <div className="mt-14">
             <h3 className="sr-only">{content.colorsLabel}</h3>
             <ul

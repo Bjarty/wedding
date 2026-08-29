@@ -1,0 +1,1780 @@
+/**
+ * Private Google Sheets writer for wedding RSVPs.
+ *
+ * Only the serverless RSVP API may call this web app. The browser must never
+ * know the deployment URL or WRITER_HMAC_SECRET.
+ */
+
+const PROTOCOL_VERSION_ = 'v1';
+const DEFAULT_CLOCK_SKEW_SECONDS_ = 300;
+const MAX_ENCODED_PAYLOAD_LENGTH_ = 60000;
+const MAX_INTENT_JSON_LENGTH_ = 20000;
+const LOCK_TIMEOUT_MILLISECONDS_ = 10000;
+const INTENT_MAC_DOMAIN_ = 'rsvp-intent-v1';
+const COMPLETION_MAC_DOMAIN_ = 'rsvp-completion-v1';
+const PRODUCTION_SHEET_CLEAR_EARLIEST_ = '2027-05-23T00:00:00+02:00';
+const RETENTION_DELETE_BY_ = '2027-08-01T00:00:00+02:00';
+
+const REQUEST_ID_PATTERN_ = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const IDEMPOTENCY_KEY_PATTERN_ = REQUEST_ID_PATTERN_;
+const TOKEN_HASH_PATTERN_ = /^[A-Za-z0-9_-]{43}$/;
+const OPAQUE_ID_PATTERN_ = /^[A-Za-z0-9_-]{1,64}$/;
+const RECEIPT_NUMBER_PATTERN_ = /^RSVP-[A-Z0-9]{6,20}$/;
+const MEAL_CHOICES_ = new Set(['fish', 'meat', 'vegetarian', 'vegan']);
+const PUBLIC_ERROR_CODES_ = new Set([
+  'INVITATION_INVALID',
+  'RSVP_CLOSED',
+  'REVISION_CONFLICT',
+  'IDEMPOTENCY_CONFLICT',
+  'RATE_LIMITED',
+  'WRITER_BUSY',
+]);
+
+const SHEETS_ = Object.freeze({
+  invitations: 'Invitations',
+  responses: 'Responses',
+  guestDetails: 'GuestDetails',
+  idempotency: 'Idempotency',
+  audit: 'Audit',
+});
+
+const HEADERS_ = Object.freeze({
+  Invitations: [
+    'householdId',
+    'tokenHash',
+    'displayName',
+    'maxGuests',
+    'active',
+    'currentRevision',
+    'createdAt',
+    'updatedAt',
+  ],
+  Responses: [
+    'responseId',
+    'receiptNumber',
+    'householdId',
+    'revision',
+    'attending',
+    'guestCount',
+    'email',
+    'message',
+    'submittedAt',
+    'updatedAt',
+  ],
+  GuestDetails: [
+    'householdId',
+    'guestId',
+    'displayName',
+    'attending',
+    'mealChoice',
+    'revision',
+    'updatedAt',
+  ],
+  Idempotency: [
+    'requestId',
+    'operation',
+    'idempotencyKey',
+    'payloadHash',
+    'householdId',
+    'baseRevision',
+    'targetRevision',
+    'status',
+    'intentJson',
+    'intentMac',
+    'responseJson',
+    'completionMac',
+    'requestTimestamp',
+    'createdAt',
+    'updatedAt',
+    'expiresAt',
+  ],
+  Audit: [
+    'auditId',
+    'occurredAt',
+    'operation',
+    'outcome',
+    'householdId',
+    'responseId',
+    'revision',
+    'idempotencyKey',
+    'requestId',
+  ],
+});
+
+const TEXT_COLUMNS_ = Object.freeze({
+  Invitations: ['householdId', 'tokenHash', 'displayName'],
+  Responses: ['responseId', 'receiptNumber', 'householdId', 'email', 'message'],
+  GuestDetails: ['householdId', 'guestId', 'displayName', 'mealChoice'],
+  Idempotency: [
+    'requestId',
+    'operation',
+    'idempotencyKey',
+    'payloadHash',
+    'householdId',
+    'status',
+    'intentJson',
+    'intentMac',
+    'responseJson',
+    'completionMac',
+  ],
+  Audit: ['auditId', 'operation', 'outcome', 'householdId', 'responseId', 'idempotencyKey', 'requestId'],
+});
+
+class ApiError_ extends Error {
+  constructor(code) {
+    super(code);
+    this.name = 'ApiError';
+    this.code = code;
+  }
+}
+
+/** Creates the five required tabs and exact headers without deleting data. */
+function initSheet() {
+  const spreadsheet = getConfiguredSpreadsheet_();
+  assertExpectedOwner_(spreadsheet);
+  getEnvironment_();
+
+  spreadsheet.setSpreadsheetTimeZone('Europe/Amsterdam');
+  spreadsheet.setSpreadsheetLocale('nl_NL');
+
+  const initialized = [];
+  for (const sheetName of Object.values(SHEETS_)) {
+    const headers = HEADERS_[sheetName];
+    let sheet = spreadsheet.getSheetByName(sheetName);
+    if (!sheet) sheet = spreadsheet.insertSheet(sheetName);
+
+    ensureColumnCapacity_(sheet, headers.length);
+    const existingHeader = sheet.getRange(1, 1, 1, headers.length).getDisplayValues()[0];
+    const headerIsEmpty = existingHeader.every((value) => value.trim() === '');
+    if (headerIsEmpty) {
+      sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
+    } else if (!arraysEqual_(existingHeader, headers)) {
+      throw new Error(`${sheetName} has an unexpected header row; no data was changed.`);
+    }
+
+    sheet.setFrozenRows(1);
+    sheet.getRange(1, 1, 1, headers.length)
+      .setFontWeight('bold')
+      .setBackground('#1C1917')
+      .setFontColor('#FAFAF9');
+    setTextColumnFormats_(sheet, headers, TEXT_COLUMNS_[sheetName]);
+    sheet.autoResizeColumns(1, headers.length);
+    initialized.push(sheetName);
+  }
+
+  SpreadsheetApp.flush();
+  return {
+    environment: getEnvironment_(),
+    spreadsheetId: spreadsheet.getId(),
+    owner: spreadsheet.getOwner().getEmail(),
+    sheets: initialized,
+  };
+}
+
+/** Read-only preview for a defense-in-depth Sheet data clear. */
+function previewRsvpSheetClear() {
+  const spreadsheet = getConfiguredSpreadsheet_();
+  assertExpectedOwner_(spreadsheet);
+  assertSchema_(spreadsheet);
+  return buildSheetClearPreview_(spreadsheet, new Date());
+}
+
+/**
+ * Clears visible data cells in all five RSVP tabs while preserving headers.
+ * This is a reset/defense-in-depth step, not permanent erasure: Sheet version
+ * history may retain data until the owner deletes and empties the file trash.
+ */
+function clearRsvpSheetDataWithConfirmation() {
+  const lock = LockService.getScriptLock();
+  if (!lock.tryLock(LOCK_TIMEOUT_MILLISECONDS_)) {
+    throw new Error('Could not acquire the RSVP ScriptLock. Try again later.');
+  }
+
+  try {
+    const spreadsheet = getConfiguredSpreadsheet_();
+    assertExpectedOwner_(spreadsheet);
+    assertSchema_(spreadsheet);
+    const preview = buildSheetClearPreview_(spreadsheet, new Date());
+    if (!preview.eligibleNow) {
+      throw new Error(`Production Sheet clear is blocked until ${PRODUCTION_SHEET_CLEAR_EARLIEST_}.`);
+    }
+
+    const properties = PropertiesService.getScriptProperties();
+    const providedConfirmation = properties.getProperty('RSVP_SHEET_CLEAR_CONFIRMATION');
+    if (!constantTimeEqual_(providedConfirmation || '', preview.confirmationValue)) {
+      throw new Error('RSVP_SHEET_CLEAR_CONFIRMATION does not match the Sheet-clear preview.');
+    }
+
+    for (const sheetName of Object.values(SHEETS_)) {
+      const sheet = spreadsheet.getSheetByName(sheetName);
+      const dataRows = Math.max(0, sheet.getLastRow() - 1);
+      if (dataRows > 0) {
+        sheet.getRange(2, 1, dataRows, sheet.getLastColumn()).clearContent();
+      }
+    }
+
+    SpreadsheetApp.flush();
+    const clearedAt = new Date().toISOString();
+    properties.deleteProperty('RSVP_SHEET_CLEAR_CONFIRMATION');
+    properties.setProperty('LAST_RSVP_SHEET_CLEAR_AT', clearedAt);
+    return {
+      environment: preview.environment,
+      clearedAt,
+      clearedRows: preview.rowCounts,
+      headersPreserved: true,
+      permanentDeletionCompleted: false,
+    };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+/**
+ * Manually recovers every durable pending submit intent. This is intentionally
+ * not installed as a trigger: operators run it after inspecting the Sheet.
+ */
+function recoverAllPendingIntents() {
+  return withScriptLock_(() => {
+    const spreadsheet = getReadySpreadsheet_();
+    const sheet = spreadsheet.getSheetByName(SHEETS_.idempotency);
+    const submitRows = findRows_(sheet, 'operation', 'submit');
+    if (submitRows.some((row) => !['pending', 'completed'].includes(String(row.values.status)))) {
+      throw new Error('Submit idempotency row has an unknown status.');
+    }
+    const pendingRows = submitRows.filter((row) => row.values.status === 'pending');
+    const intents = pendingRows.map((row) => ({ row, intent: readAndValidateSubmitIntent_(row) }));
+    const pendingHouseholds = new Set();
+    for (const entry of intents) {
+      if (pendingHouseholds.has(entry.intent.householdId)) {
+        throw new Error('More than one pending intent exists for a household.');
+      }
+      pendingHouseholds.add(entry.intent.householdId);
+    }
+
+    const recovered = intents.map((entry) => applyPendingIntent_(spreadsheet, entry.row));
+    return { recovered: recovered.length, results: recovered };
+  });
+}
+
+function doGet() {
+  return errorOutput_('invalid', 'WRITER_BUSY');
+}
+
+function doPost(event) {
+  let responseRequestId = extractResponseRequestId_(event);
+  try {
+    const envelope = readAndVerifyEnvelope_(event);
+    responseRequestId = envelope.requestId;
+    const writerPayload = readWriterPayload_(envelope);
+    let data;
+    if (writerPayload.operation === 'resolve') {
+      const resolveData = validateResolveData_(writerPayload.data);
+      data = resolveHousehold_(
+        resolveData,
+        sha256Hex_(JSON.stringify(resolveData)),
+        envelope,
+      );
+    } else {
+      const submitData = validateSubmitData_(writerPayload.data);
+      data = submitResponse_(
+        submitData,
+        hashCanonicalSubmitData_(submitData),
+        envelope,
+      );
+    }
+
+    return jsonOutput_({
+      version: PROTOCOL_VERSION_,
+      requestId: responseRequestId,
+      ok: true,
+      data,
+    });
+  } catch (error) {
+    const code = error instanceof ApiError_ && PUBLIC_ERROR_CODES_.has(error.code)
+      ? error.code
+      : 'WRITER_BUSY';
+    if (!(error instanceof ApiError_)) {
+      // Never log request bodies, token hashes, names, email or messages.
+      console.error('RSVP writer failed with an internal error.');
+    }
+    return errorOutput_(responseRequestId, code);
+  }
+}
+
+function readAndVerifyEnvelope_(event) {
+  if (!event || !event.postData || typeof event.postData.contents !== 'string') {
+    throw new ApiError_('WRITER_BUSY');
+  }
+  if (event.postData.contents.length > MAX_ENCODED_PAYLOAD_LENGTH_ + 2000) {
+    throw new ApiError_('WRITER_BUSY');
+  }
+
+  const envelope = parseJsonObject_(event.postData.contents);
+  assertExactKeys_(envelope, ['version', 'timestamp', 'requestId', 'payload', 'signature']);
+  if (envelope.version !== PROTOCOL_VERSION_) throw new ApiError_('WRITER_BUSY');
+  if (!Number.isInteger(envelope.timestamp) || envelope.timestamp <= 0) {
+    throw new ApiError_('WRITER_BUSY');
+  }
+  if (typeof envelope.requestId !== 'string' || !REQUEST_ID_PATTERN_.test(envelope.requestId)) {
+    throw new ApiError_('WRITER_BUSY');
+  }
+  if (typeof envelope.payload !== 'string'
+      || envelope.payload.length === 0
+      || envelope.payload.length > MAX_ENCODED_PAYLOAD_LENGTH_
+      || !/^[A-Za-z0-9_-]+$/.test(envelope.payload)) {
+    throw new ApiError_('WRITER_BUSY');
+  }
+  if (typeof envelope.signature !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(envelope.signature)) {
+    throw new ApiError_('WRITER_BUSY');
+  }
+
+  const clockSkew = getIntegerProperty_(
+    'MAX_CLOCK_SKEW_SECONDS',
+    DEFAULT_CLOCK_SKEW_SECONDS_,
+    60,
+    900,
+  );
+  const nowSeconds = Math.floor(Date.now() / 1000);
+  if (Math.abs(nowSeconds - envelope.timestamp) > clockSkew) {
+    throw new ApiError_('RATE_LIMITED');
+  }
+
+  const signingInput = `${PROTOCOL_VERSION_}.${envelope.timestamp}.${envelope.requestId}.${envelope.payload}`;
+  const expectedSignature = hmacSha256Base64Url_(
+    signingInput,
+    getRequiredProperty_('WRITER_HMAC_SECRET'),
+  );
+  if (!constantTimeEqual_(envelope.signature, expectedSignature)) {
+    throw new ApiError_('WRITER_BUSY');
+  }
+  return envelope;
+}
+
+function readWriterPayload_(envelope) {
+  const payload = parseJsonObject_(decodeBase64UrlUtf8_(envelope.payload));
+  assertExactKeys_(payload, ['version', 'operation', 'requestId', 'data']);
+  if (payload.version !== PROTOCOL_VERSION_
+      || !['resolve', 'submit'].includes(payload.operation)
+      || payload.requestId !== envelope.requestId
+      || !payload.data
+      || typeof payload.data !== 'object'
+      || Array.isArray(payload.data)) {
+    throw new ApiError_('WRITER_BUSY');
+  }
+  return payload;
+}
+
+function validateResolveData_(data) {
+  assertExactKeys_(data, ['tokenHash']);
+  return { tokenHash: normalizeTokenHash_(data.tokenHash) };
+}
+
+function validateSubmitData_(data) {
+  assertAllowedAndRequiredKeys_(
+    data,
+    ['tokenHash', 'idempotencyKey', 'revision', 'attending', 'guests'],
+    ['email', 'message'],
+  );
+
+  const tokenHash = normalizeTokenHash_(data.tokenHash);
+  if (typeof data.idempotencyKey !== 'string'
+      || !IDEMPOTENCY_KEY_PATTERN_.test(data.idempotencyKey)) {
+    throw new ApiError_('WRITER_BUSY');
+  }
+  if (!Number.isSafeInteger(data.revision) || data.revision < 0) {
+    throw new ApiError_('WRITER_BUSY');
+  }
+  if (typeof data.attending !== 'boolean') throw new ApiError_('WRITER_BUSY');
+  if (!Array.isArray(data.guests) || data.guests.length < 1 || data.guests.length > 20) {
+    throw new ApiError_('WRITER_BUSY');
+  }
+
+  const guests = data.guests.map((guest) => {
+    if (!guest || typeof guest !== 'object' || Array.isArray(guest)) {
+      throw new ApiError_('WRITER_BUSY');
+    }
+    assertAllowedAndRequiredKeys_(guest, ['guestId', 'attending'], ['mealChoice']);
+    if (typeof guest.guestId !== 'string' || !OPAQUE_ID_PATTERN_.test(guest.guestId)) {
+      throw new ApiError_('WRITER_BUSY');
+    }
+    if (typeof guest.attending !== 'boolean') throw new ApiError_('WRITER_BUSY');
+    if (guest.attending) {
+      if (typeof guest.mealChoice !== 'string' || !MEAL_CHOICES_.has(guest.mealChoice)) {
+        throw new ApiError_('WRITER_BUSY');
+      }
+      return { guestId: guest.guestId, attending: true, mealChoice: guest.mealChoice };
+    }
+    if (guest.mealChoice !== undefined) throw new ApiError_('WRITER_BUSY');
+    return { guestId: guest.guestId, attending: false };
+  });
+
+  if (new Set(guests.map((guest) => guest.guestId)).size !== guests.length) {
+    throw new ApiError_('WRITER_BUSY');
+  }
+  if (data.attending !== guests.some((guest) => guest.attending)) {
+    throw new ApiError_('WRITER_BUSY');
+  }
+
+  const normalized = {
+    tokenHash,
+    idempotencyKey: data.idempotencyKey,
+    revision: data.revision,
+    attending: data.attending,
+    guests,
+  };
+  const email = normalizeOptionalString_(data.email, 254).toLowerCase();
+  if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    throw new ApiError_('WRITER_BUSY');
+  }
+  const message = normalizeOptionalString_(data.message, 1000);
+  if (email) normalized.email = email;
+  if (message) normalized.message = message;
+  return normalized;
+}
+
+function hashCanonicalSubmitData_(data) {
+  const canonical = {
+    tokenHash: data.tokenHash,
+    idempotencyKey: data.idempotencyKey,
+    revision: data.revision,
+    attending: data.attending,
+    guests: data.guests
+      .slice()
+      .sort((left, right) => left.guestId.localeCompare(right.guestId))
+      .map((guest) => guest.attending
+        ? { guestId: guest.guestId, attending: true, mealChoice: guest.mealChoice }
+        : { guestId: guest.guestId, attending: false }),
+  };
+  if (data.email) canonical.email = data.email;
+  if (data.message) canonical.message = data.message;
+  return sha256Hex_(JSON.stringify(canonical));
+}
+
+function resolveHousehold_(data, payloadHash, envelope) {
+  return withScriptLock_(() => {
+    const spreadsheet = getReadySpreadsheet_();
+    const candidateInvitation = getInvitationByTokenHash_(spreadsheet, data.tokenHash);
+    recoverPendingIntentsForHousehold_(spreadsheet, candidateInvitation.householdId);
+    assertRsvpOpen_();
+    rejectReplayedRequestId_(spreadsheet, envelope.requestId);
+    const invitation = getActiveInvitation_(spreadsheet, data.tokenHash);
+    const guests = getPresetGuests_(spreadsheet, invitation.householdId);
+    assertGuestCapacity_(guests, invitation.maxGuests);
+    const currentRsvp = getCurrentRsvp_(spreadsheet, invitation, guests);
+
+    appendIdempotencyRow_(spreadsheet, {
+      requestId: envelope.requestId,
+      operation: 'resolve',
+      idempotencyKey: '',
+      payloadHash,
+      householdId: invitation.householdId,
+      baseRevision: invitation.currentRevision,
+      targetRevision: invitation.currentRevision,
+      status: 'observed',
+      intentJson: '',
+      intentMac: '',
+      responseJson: '',
+      completionMac: '',
+      requestTimestamp: new Date(envelope.timestamp * 1000),
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      expiresAt: new Date(RETENTION_DELETE_BY_),
+    });
+    SpreadsheetApp.flush();
+
+    return {
+      householdId: invitation.householdId,
+      displayName: invitation.displayName,
+      maxGuests: invitation.maxGuests,
+      guests: guests.map((guest) => ({ guestId: guest.guestId, displayName: guest.displayName })),
+      currentRsvp,
+    };
+  });
+}
+
+function submitResponse_(data, payloadHash, envelope) {
+  return withScriptLock_(() => {
+    const spreadsheet = getReadySpreadsheet_();
+    const candidateInvitation = getInvitationByTokenHash_(spreadsheet, data.tokenHash);
+    recoverPendingIntentsForHousehold_(spreadsheet, candidateInvitation.householdId);
+    const idempotencySheet = spreadsheet.getSheetByName(SHEETS_.idempotency);
+    const priorRequest = findUniqueRow_(idempotencySheet, 'idempotencyKey', data.idempotencyKey);
+    if (priorRequest) {
+      if (priorRequest.values.operation !== 'submit'
+          || !constantTimeEqual_(String(priorRequest.values.payloadHash), payloadHash)) {
+        throw new ApiError_('IDEMPOTENCY_CONFLICT');
+      }
+      const priorIntent = readAndValidateSubmitIntent_(priorRequest);
+      if (priorRequest.values.status !== 'completed') {
+        throw new Error('Recovered idempotency intent is not completed.');
+      }
+      return priorIntent.result;
+    }
+
+    // A confirmed write remains safely retryable even after RSVP closes. Only
+    // new logical submissions are subject to the close time.
+    assertRsvpOpen_();
+    rejectReplayedRequestId_(spreadsheet, envelope.requestId);
+    const invitation = getActiveInvitation_(spreadsheet, data.tokenHash);
+    if (data.revision !== invitation.currentRevision) {
+      throw new ApiError_('REVISION_CONFLICT');
+    }
+
+    const presetGuests = getPresetGuests_(spreadsheet, invitation.householdId);
+    assertGuestCapacity_(presetGuests, invitation.maxGuests);
+    assertExactPresetGuestIds_(presetGuests, data.guests);
+    const attendingCount = data.guests.filter((guest) => guest.attending).length;
+    if (attendingCount > invitation.maxGuests) throw new ApiError_('INVITATION_INVALID');
+
+    const responsesSheet = spreadsheet.getSheetByName(SHEETS_.responses);
+    const existingResponse = findUniqueRow_(responsesSheet, 'householdId', invitation.householdId);
+    if (invitation.currentRevision > 0 && !existingResponse) {
+      throw new Error('Invitation revision has no matching response.');
+    }
+    if (existingResponse
+        && asInteger_(existingResponse.values.revision, 0, 1000000) !== invitation.currentRevision) {
+      throw new Error('Response and invitation revisions differ.');
+    }
+    if (existingResponse) assertResponseRowHasNoFormulas_(responsesSheet, existingResponse);
+
+    const now = new Date();
+    const nextRevision = invitation.currentRevision + 1;
+    const responseId = existingResponse
+      ? normalizeOpaqueId_(existingResponse.values.responseId)
+      : generateUniqueUuid_(responsesSheet, 'responseId');
+    const receiptNumber = existingResponse
+      ? normalizeReceiptNumber_(existingResponse.values.receiptNumber)
+      : generateReceiptNumber_(responsesSheet);
+    const submittedAt = existingResponse ? toIsoTimestamp_(existingResponse.values.submittedAt) : now.toISOString();
+    const base = buildSubmitBaseState_(invitation, existingResponse, presetGuests);
+    const baseStateHash = sha256Hex_(JSON.stringify(base));
+
+    const result = {
+      revision: nextRevision,
+      savedAt: now.toISOString(),
+      idempotencyKey: data.idempotencyKey,
+      receiptNumber,
+    };
+    const submittedById = new Map(data.guests.map((guest) => [guest.guestId, guest]));
+    const intent = {
+      version: PROTOCOL_VERSION_,
+      kind: 'submit',
+      requestId: envelope.requestId,
+      idempotencyKey: data.idempotencyKey,
+      payloadHash,
+      householdId: invitation.householdId,
+      baseRevision: invitation.currentRevision,
+      targetRevision: nextRevision,
+      base,
+      baseStateHash,
+      response: {
+        responseId,
+        receiptNumber,
+        householdId: invitation.householdId,
+        revision: nextRevision,
+        attending: data.attending,
+        guestCount: attendingCount,
+        email: data.email || '',
+        message: data.message || '',
+        submittedAt,
+        updatedAt: now.toISOString(),
+      },
+      guests: presetGuests.map((guest) => {
+        const submitted = submittedById.get(guest.guestId);
+        return submitted.attending
+          ? {
+            guestId: guest.guestId,
+            attending: true,
+            mealChoice: submitted.mealChoice,
+            revision: nextRevision,
+            updatedAt: now.toISOString(),
+          }
+          : {
+            guestId: guest.guestId,
+            attending: false,
+            mealChoice: '',
+            revision: nextRevision,
+            updatedAt: now.toISOString(),
+          };
+      }),
+      invitation: {
+        householdId: invitation.householdId,
+        currentRevision: nextRevision,
+        updatedAt: now.toISOString(),
+      },
+      audit: {
+        auditId: generateUniqueUuid_(spreadsheet.getSheetByName(SHEETS_.audit), 'auditId'),
+        occurredAt: now.toISOString(),
+        operation: existingResponse ? 'response.updated' : 'response.created',
+        outcome: 'saved',
+        householdId: invitation.householdId,
+        responseId,
+        revision: nextRevision,
+        idempotencyKey: data.idempotencyKey,
+        requestId: envelope.requestId,
+      },
+      result,
+    };
+    validateSubmitIntentBody_(intent);
+    if (!constantTimeEqual_(baseStateHash, sha256Hex_(JSON.stringify(intent.base)))) {
+      throw new Error('Locally constructed intent base-state hash is invalid.');
+    }
+    const intentJson = JSON.stringify(intent);
+    if (intentJson.length > MAX_INTENT_JSON_LENGTH_) {
+      throw new Error('Submit intent exceeds the safe Sheet cell limit.');
+    }
+    const intentRowValues = {
+      requestId: envelope.requestId,
+      operation: 'submit',
+      idempotencyKey: data.idempotencyKey,
+      payloadHash,
+      householdId: invitation.householdId,
+      baseRevision: invitation.currentRevision,
+      targetRevision: nextRevision,
+      status: 'pending',
+      intentJson,
+      intentMac: '',
+      responseJson: '',
+      completionMac: '',
+      requestTimestamp: new Date(envelope.timestamp * 1000),
+      createdAt: now,
+      updatedAt: now,
+      expiresAt: new Date(RETENTION_DELETE_BY_),
+    };
+    intentRowValues.intentMac = computeIntentMac_(intentRowValues, intentJson);
+    appendIdempotencyRow_(spreadsheet, intentRowValues);
+    // Durability boundary: no RSVP data mutation occurs before this flush.
+    SpreadsheetApp.flush();
+    const durableIntentRow = findUniqueRow_(idempotencySheet, 'idempotencyKey', data.idempotencyKey);
+    if (!durableIntentRow) throw new Error('Write-ahead intent was not persisted.');
+    return applyPendingIntent_(spreadsheet, durableIntentRow);
+  });
+}
+
+function recoverPendingIntentsForHousehold_(spreadsheet, householdId) {
+  const rows = findRows_(
+    spreadsheet.getSheetByName(SHEETS_.idempotency),
+    'householdId',
+    householdId,
+  );
+  const pendingRows = [];
+  for (const row of rows) {
+    if (row.values.operation !== 'submit') continue;
+    if (!['pending', 'completed'].includes(String(row.values.status))) {
+      throw new Error('Submit idempotency row has an unknown status.');
+    }
+    if (row.values.status === 'pending') pendingRows.push(row);
+  }
+  if (pendingRows.length > 1) {
+    throw new Error('More than one pending intent exists for a household.');
+  }
+  if (pendingRows.length === 1) applyPendingIntent_(spreadsheet, pendingRows[0]);
+}
+
+function applyPendingIntent_(spreadsheet, intentRow) {
+  const intent = readAndValidateSubmitIntent_(intentRow);
+  if (intentRow.values.status === 'completed') return intent.result;
+  if (intentRow.values.status !== 'pending') throw new Error('Intent is not recoverable.');
+  assertPendingRecoveryBeforeRetention_();
+
+  let inspection = inspectSubmitIntentState_(spreadsheet, intent);
+  if (inspection.invitationState === 'target') {
+    assertEntireIntentTarget_(inspection);
+  } else {
+    if (inspection.responseState === 'base') {
+      writeResponseTarget_(spreadsheet, intent, inspection.responseRow);
+    }
+    SpreadsheetApp.flush();
+    inspection = inspectSubmitIntentState_(spreadsheet, intent);
+    if (inspection.responseState !== 'target') {
+      throw new Error('Response target was not durably persisted.');
+    }
+
+    writeGuestTargets_(spreadsheet, intent, inspection);
+    SpreadsheetApp.flush();
+    inspection = inspectSubmitIntentState_(spreadsheet, intent);
+    if (inspection.guestStates.some((state) => state !== 'target')) {
+      throw new Error('Guest targets were not durably persisted.');
+    }
+
+    if (inspection.auditState === 'base') writeAuditTarget_(spreadsheet, intent);
+    SpreadsheetApp.flush();
+    inspection = inspectSubmitIntentState_(spreadsheet, intent);
+    if (inspection.auditState !== 'target') {
+      throw new Error('Audit target was not durably persisted.');
+    }
+
+    // currentRevision is the commit pointer and is deliberately the final
+    // domain write, after Response, every guest and Audit are durable.
+    if (inspection.invitationState !== 'target') writeInvitationTarget_(spreadsheet, intent, inspection);
+    SpreadsheetApp.flush();
+    inspection = inspectSubmitIntentState_(spreadsheet, intent);
+    assertEntireIntentTarget_(inspection);
+  }
+
+  const sheet = spreadsheet.getSheetByName(SHEETS_.idempotency);
+  const durableRow = findUniqueRow_(sheet, 'idempotencyKey', intent.idempotencyKey);
+  if (!durableRow) throw new Error('Pending intent disappeared before completion.');
+  const durableIntent = readAndValidateSubmitIntent_(durableRow);
+  if (durableRow.values.status === 'completed') return durableIntent.result;
+  if (durableRow.values.status !== 'pending') throw new Error('Pending intent status changed unexpectedly.');
+
+  const columns = headerIndex_(HEADERS_.Idempotency);
+  const responseJson = JSON.stringify(durableIntent.result);
+  const completionMac = computeCompletionMac_(durableRow.values.intentMac, responseJson);
+  // Completion material is a separately authenticated durability boundary.
+  // Rewriting it is safe after a crash between any of these cells.
+  sheet.getRange(durableRow.rowNumber, columns.responseJson + 1).setValue(responseJson);
+  sheet.getRange(durableRow.rowNumber, columns.completionMac + 1).setValue(completionMac);
+  sheet.getRange(durableRow.rowNumber, columns.updatedAt + 1).setValue(new Date());
+  SpreadsheetApp.flush();
+
+  const preparedCompletionRow = findUniqueRow_(sheet, 'idempotencyKey', intent.idempotencyKey);
+  if (!preparedCompletionRow || preparedCompletionRow.values.status !== 'pending') {
+    throw new Error('Intent completion material was not durably prepared.');
+  }
+  readAndValidateSubmitIntent_(preparedCompletionRow);
+  if (!hasCompleteCompletionMaterial_(preparedCompletionRow)) {
+    throw new Error('Intent completion material failed readback.');
+  }
+
+  // Status is the completion commit pointer and the only cell in this final
+  // write boundary.
+  sheet.getRange(durableRow.rowNumber, columns.status + 1).setValue('completed');
+  SpreadsheetApp.flush();
+
+  const completedRow = findUniqueRow_(sheet, 'idempotencyKey', intent.idempotencyKey);
+  if (!completedRow || completedRow.values.status !== 'completed') {
+    throw new Error('Intent completion was not durably persisted.');
+  }
+  const completedIntent = readAndValidateSubmitIntent_(completedRow);
+  assertEntireIntentTarget_(inspectSubmitIntentState_(spreadsheet, completedIntent));
+  return completedIntent.result;
+}
+
+function buildSubmitBaseState_(invitation, existingResponse, presetGuests) {
+  const base = {
+    invitation: {
+      householdId: invitation.householdId,
+      currentRevision: invitation.currentRevision,
+      updatedAt: toIsoTimestamp_(invitation.updatedAt),
+    },
+    response: existingResponse ? responseStateFromValues_(existingResponse.values) : null,
+    guests: presetGuests.map((guest) => guestStateFromValues_(guest)),
+  };
+
+  if (base.response && base.response.revision !== invitation.currentRevision) {
+    throw new Error('Base response revision differs from the invitation.');
+  }
+  if (!base.response && invitation.currentRevision !== 0) {
+    throw new Error('A revised invitation must have a base response.');
+  }
+  for (const guest of base.guests) {
+    if (guest.revision !== invitation.currentRevision) {
+      throw new Error('Base guest revision differs from the invitation.');
+    }
+    if (invitation.currentRevision === 0 && guest.attending !== null) {
+      throw new Error('An initial guest row already contains RSVP state.');
+    }
+    if (invitation.currentRevision > 0 && typeof guest.attending !== 'boolean') {
+      throw new Error('A revised guest row is missing attendance state.');
+    }
+  }
+  return base;
+}
+
+function computeIntentMac_(rowValues, intentJson) {
+  const signingInput = [
+    INTENT_MAC_DOMAIN_,
+    rowValues.requestId,
+    rowValues.idempotencyKey,
+    rowValues.payloadHash,
+    rowValues.householdId,
+    rowValues.baseRevision,
+    rowValues.targetRevision,
+    intentJson,
+  ].join('|');
+  return hmacSha256Base64Url_(signingInput, getRequiredProperty_('WRITER_HMAC_SECRET'));
+}
+
+function computeCompletionMac_(intentMac, responseJson) {
+  return hmacSha256Base64Url_(
+    [COMPLETION_MAC_DOMAIN_, intentMac, responseJson].join('|'),
+    getRequiredProperty_('WRITER_HMAC_SECRET'),
+  );
+}
+
+function readAndValidateSubmitIntent_(row) {
+  if (!row || row.values.operation !== 'submit') throw new Error('Row is not a submit intent.');
+  const status = String(row.values.status);
+  if (!['pending', 'completed'].includes(status)) throw new Error('Submit intent status is invalid.');
+  const requestId = String(row.values.requestId);
+  const idempotencyKey = String(row.values.idempotencyKey);
+  const payloadHash = String(row.values.payloadHash);
+  const householdId = String(row.values.householdId);
+  const baseRevision = asInteger_(row.values.baseRevision, 0, 1000000);
+  const targetRevision = asInteger_(row.values.targetRevision, 1, 1000001);
+  const intentJson = String(row.values.intentJson || '');
+  const intentMac = String(row.values.intentMac || '');
+  if (!REQUEST_ID_PATTERN_.test(requestId)
+      || !IDEMPOTENCY_KEY_PATTERN_.test(idempotencyKey)
+      || !/^[0-9a-f]{64}$/.test(payloadHash)
+      || !OPAQUE_ID_PATTERN_.test(householdId)
+      || targetRevision !== baseRevision + 1
+      || intentJson.length < 2
+      || intentJson.length > MAX_INTENT_JSON_LENGTH_
+      || !TOKEN_HASH_PATTERN_.test(intentMac)) {
+    throw new Error('Submit intent row binding is invalid.');
+  }
+  const expectedMac = computeIntentMac_(row.values, intentJson);
+  if (!constantTimeEqual_(intentMac, expectedMac)) throw new Error('Submit intent MAC is invalid.');
+
+  const intent = parseInternalJsonObject_(intentJson);
+  assertInternalExactKeys_(intent, [
+    'version', 'kind', 'requestId', 'idempotencyKey', 'payloadHash', 'householdId',
+    'baseRevision', 'targetRevision', 'base', 'baseStateHash', 'response', 'guests',
+    'invitation', 'audit', 'result',
+  ]);
+  if (intent.version !== PROTOCOL_VERSION_
+      || intent.kind !== 'submit'
+      || intent.requestId !== requestId
+      || intent.idempotencyKey !== idempotencyKey
+      || intent.payloadHash !== payloadHash
+      || intent.householdId !== householdId
+      || intent.baseRevision !== baseRevision
+      || intent.targetRevision !== targetRevision) {
+    throw new Error('Submit intent does not match its row binding.');
+  }
+
+  validateSubmitIntentBody_(intent);
+  if (!constantTimeEqual_(intent.baseStateHash, sha256Hex_(JSON.stringify(intent.base)))) {
+    throw new Error('Submit intent base-state hash is invalid.');
+  }
+  const responseJson = String(row.values.responseJson || '');
+  const completionMac = String(row.values.completionMac || '');
+  const expectedResponseJson = JSON.stringify(intent.result);
+  const expectedCompletionMac = computeCompletionMac_(intentMac, expectedResponseJson);
+  if (responseJson !== '' && !constantTimeEqual_(responseJson, expectedResponseJson)) {
+    throw new Error('Intent completion result is invalid.');
+  }
+  if (completionMac !== '' && !constantTimeEqual_(completionMac, expectedCompletionMac)) {
+    throw new Error('Intent completion MAC is invalid.');
+  }
+  if (status === 'completed'
+      && (!constantTimeEqual_(responseJson, expectedResponseJson)
+        || !constantTimeEqual_(completionMac, expectedCompletionMac))) {
+    throw new Error('Completed intent is not authenticated.');
+  }
+  const requestTimestamp = toIsoTimestamp_(row.values.requestTimestamp);
+  const createdAt = toIsoTimestamp_(row.values.createdAt);
+  const updatedAt = toIsoTimestamp_(row.values.updatedAt);
+  const expiresAt = toIsoTimestamp_(row.values.expiresAt);
+  if (Date.parse(updatedAt) < Date.parse(createdAt)
+      || expiresAt !== new Date(RETENTION_DELETE_BY_).toISOString()
+      || Math.abs(Date.parse(createdAt) - Date.parse(requestTimestamp))
+      > (getIntegerProperty_(
+        'MAX_CLOCK_SKEW_SECONDS',
+        DEFAULT_CLOCK_SKEW_SECONDS_,
+        60,
+        900,
+      ) * 1000) + 60000) {
+    throw new Error('Submit intent timestamps are invalid.');
+  }
+  return intent;
+}
+
+function hasCompleteCompletionMaterial_(row) {
+  const intent = readAndValidateSubmitIntent_(row);
+  const responseJson = JSON.stringify(intent.result);
+  return constantTimeEqual_(String(row.values.responseJson || ''), responseJson)
+    && constantTimeEqual_(
+      String(row.values.completionMac || ''),
+      computeCompletionMac_(String(row.values.intentMac), responseJson),
+    );
+}
+
+function validateSubmitIntentBody_(intent) {
+  assertInternalExactKeys_(intent.base, ['invitation', 'response', 'guests']);
+  assertInternalExactKeys_(intent.base.invitation, ['householdId', 'currentRevision', 'updatedAt']);
+  if (intent.base.invitation.householdId !== intent.householdId
+      || intent.base.invitation.currentRevision !== intent.baseRevision) {
+    throw new Error('Intent base invitation is invalid.');
+  }
+  assertCanonicalIso_(intent.base.invitation.updatedAt);
+  if (intent.base.response !== null) validateIntentResponse_(intent.base.response, intent, false);
+  if ((intent.baseRevision === 0) !== (intent.base.response === null)) {
+    throw new Error('Intent base response presence is invalid.');
+  }
+  if (!Array.isArray(intent.base.guests) || !Array.isArray(intent.guests)
+      || intent.guests.length < 1 || intent.guests.length > 20
+      || intent.base.guests.length !== intent.guests.length) {
+    throw new Error('Intent guest arrays are invalid.');
+  }
+
+  validateIntentResponse_(intent.response, intent, true);
+  assertInternalExactKeys_(intent.invitation, ['householdId', 'currentRevision', 'updatedAt']);
+  if (intent.invitation.householdId !== intent.householdId
+      || intent.invitation.currentRevision !== intent.targetRevision) {
+    throw new Error('Intent target invitation is invalid.');
+  }
+  assertCanonicalIso_(intent.invitation.updatedAt);
+  if (intent.invitation.updatedAt !== intent.response.updatedAt) {
+    throw new Error('Intent commit timestamps differ.');
+  }
+
+  const baseGuestIds = new Set();
+  const targetGuestIds = new Set();
+  intent.base.guests.forEach((guest) => {
+    validateIntentGuest_(guest, intent.baseRevision, true);
+    if (baseGuestIds.has(guest.guestId)) throw new Error('Intent base guests are duplicated.');
+    baseGuestIds.add(guest.guestId);
+  });
+  intent.guests.forEach((guest) => {
+    validateIntentGuest_(guest, intent.targetRevision, false);
+    if (guest.updatedAt !== intent.response.updatedAt) {
+      throw new Error('Intent guest timestamp differs from the response.');
+    }
+    if (targetGuestIds.has(guest.guestId)) throw new Error('Intent target guests are duplicated.');
+    targetGuestIds.add(guest.guestId);
+  });
+  if (baseGuestIds.size !== targetGuestIds.size
+      || [...baseGuestIds].some((guestId) => !targetGuestIds.has(guestId))) {
+    throw new Error('Intent base and target guests differ.');
+  }
+  const attendingCount = intent.guests.filter((guest) => guest.attending).length;
+  if (intent.response.attending !== (attendingCount > 0)
+      || intent.response.guestCount !== attendingCount) {
+    throw new Error('Intent response attendance is inconsistent.');
+  }
+  if (intent.base.response) {
+    const baseAttendingCount = intent.base.guests.filter((guest) => guest.attending).length;
+    if (intent.base.response.attending !== (baseAttendingCount > 0)
+        || intent.base.response.guestCount !== baseAttendingCount
+        || intent.response.responseId !== intent.base.response.responseId
+        || intent.response.receiptNumber !== intent.base.response.receiptNumber
+        || intent.response.submittedAt !== intent.base.response.submittedAt) {
+      throw new Error('Intent response does not preserve its authenticated base identity.');
+    }
+  }
+
+  assertInternalExactKeys_(intent.audit, HEADERS_.Audit);
+  if (!REQUEST_ID_PATTERN_.test(intent.audit.auditId)
+      || intent.audit.householdId !== intent.householdId
+      || intent.audit.responseId !== intent.response.responseId
+      || intent.audit.revision !== intent.targetRevision
+      || intent.audit.idempotencyKey !== intent.idempotencyKey
+      || intent.audit.requestId !== intent.requestId
+      || !['response.created', 'response.updated'].includes(intent.audit.operation)
+      || intent.audit.outcome !== 'saved') {
+    throw new Error('Intent audit target is invalid.');
+  }
+  assertCanonicalIso_(intent.audit.occurredAt);
+  if (intent.audit.occurredAt !== intent.response.updatedAt) {
+    throw new Error('Intent audit timestamp differs from the response.');
+  }
+  if ((intent.base.response === null) !== (intent.audit.operation === 'response.created')) {
+    throw new Error('Intent audit operation does not match its base state.');
+  }
+
+  assertInternalExactKeys_(intent.result, ['revision', 'savedAt', 'idempotencyKey', 'receiptNumber']);
+  if (intent.result.revision !== intent.targetRevision
+      || intent.result.savedAt !== intent.response.updatedAt
+      || intent.result.idempotencyKey !== intent.idempotencyKey
+      || intent.result.receiptNumber !== intent.response.receiptNumber) {
+    throw new Error('Intent result is invalid.');
+  }
+}
+
+function validateIntentResponse_(response, intent, isTarget) {
+  assertInternalExactKeys_(response, HEADERS_.Responses);
+  const expectedRevision = isTarget ? intent.targetRevision : intent.baseRevision;
+  if (!OPAQUE_ID_PATTERN_.test(response.responseId)
+      || !RECEIPT_NUMBER_PATTERN_.test(response.receiptNumber)
+      || response.householdId !== intent.householdId
+      || response.revision !== expectedRevision
+      || typeof response.attending !== 'boolean'
+      || !Number.isSafeInteger(response.guestCount)
+      || response.guestCount < 0
+      || response.guestCount > 20
+      || typeof response.email !== 'string'
+      || response.email.length > 254
+      || typeof response.message !== 'string'
+      || response.message.length > 1000
+      || response.email.normalize('NFC') !== response.email
+      || response.message.normalize('NFC') !== response.message
+      || /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/.test(response.email)
+      || /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/.test(response.message)) {
+    throw new Error('Intent response state is invalid.');
+  }
+  assertStoredResponseTextValid_(response);
+  assertCanonicalIso_(response.submittedAt);
+  assertCanonicalIso_(response.updatedAt);
+}
+
+function validateIntentGuest_(guest, revision, isBase) {
+  assertInternalExactKeys_(guest, ['guestId', 'attending', 'mealChoice', 'revision', 'updatedAt']);
+  if (!OPAQUE_ID_PATTERN_.test(guest.guestId) || guest.revision !== revision) {
+    throw new Error('Intent guest binding is invalid.');
+  }
+  if (isBase && revision === 0) {
+    if (guest.attending !== null || guest.mealChoice !== '' || guest.updatedAt !== '') {
+      throw new Error('Initial intent guest base is invalid.');
+    }
+  } else if (typeof guest.attending !== 'boolean'
+      || (guest.attending && !MEAL_CHOICES_.has(guest.mealChoice))
+      || (!guest.attending && guest.mealChoice !== '')) {
+    throw new Error('Intent guest RSVP state is invalid.');
+  }
+  if (!(isBase && revision === 0)) assertCanonicalIso_(guest.updatedAt);
+}
+
+function inspectSubmitIntentState_(spreadsheet, intent) {
+  const invitationSheet = spreadsheet.getSheetByName(SHEETS_.invitations);
+  const invitationRow = findUniqueRow_(invitationSheet, 'householdId', intent.householdId);
+  if (!invitationRow) throw new Error('Intent invitation is missing.');
+  const actualInvitation = invitationStateFromValues_(invitationRow.values);
+  const preparedInvitation = {
+    householdId: intent.householdId,
+    currentRevision: intent.baseRevision,
+    updatedAt: intent.invitation.updatedAt,
+  };
+  let invitationState;
+  if (statesEqual_(actualInvitation, intent.invitation)) invitationState = 'target';
+  else if (statesEqual_(actualInvitation, preparedInvitation)) invitationState = 'prepared';
+  else if (statesEqual_(actualInvitation, intent.base.invitation)) invitationState = 'base';
+  else throw new Error('Invitation is neither the authenticated base, prepared nor target state.');
+
+  const responseSheet = spreadsheet.getSheetByName(SHEETS_.responses);
+  const responseRow = findUniqueRow_(responseSheet, 'householdId', intent.householdId);
+  const responseById = findUniqueRow_(responseSheet, 'responseId', intent.response.responseId);
+  const responseByReceipt = findUniqueRow_(responseSheet, 'receiptNumber', intent.response.receiptNumber);
+  for (const identityRow of [responseById, responseByReceipt]) {
+    if (identityRow && identityRow.values.householdId !== intent.householdId) {
+      throw new Error('Intent response identity belongs to another household.');
+    }
+  }
+  if (responseRow) assertResponseRowHasNoFormulas_(responseSheet, responseRow);
+  const actualResponse = responseRow ? responseStateFromValues_(responseRow.values) : null;
+  const responseState = classifyIntentState_(
+    actualResponse,
+    intent.base.response,
+    intent.response,
+    'Response',
+  );
+
+  const guestRows = findRows_(
+    spreadsheet.getSheetByName(SHEETS_.guestDetails),
+    'householdId',
+    intent.householdId,
+  );
+  if (guestRows.length !== intent.guests.length) throw new Error('Intent guest row count changed.');
+  const guestRowsById = new Map();
+  for (const row of guestRows) {
+    const guestId = normalizeOpaqueId_(row.values.guestId);
+    if (guestRowsById.has(guestId)) throw new Error('Intent guest row is duplicated.');
+    guestRowsById.set(guestId, row);
+  }
+  const baseGuestsById = new Map(intent.base.guests.map((guest) => [guest.guestId, guest]));
+  const guestStates = intent.guests.map((targetGuest) => {
+    const row = guestRowsById.get(targetGuest.guestId);
+    if (!row) throw new Error('Intent guest row is missing.');
+    return classifyIntentState_(
+      guestStateFromValues_(row.values),
+      baseGuestsById.get(targetGuest.guestId),
+      targetGuest,
+      `Guest ${targetGuest.guestId}`,
+    );
+  });
+
+  const auditSheet = spreadsheet.getSheetByName(SHEETS_.audit);
+  const auditByKey = findUniqueRow_(auditSheet, 'idempotencyKey', intent.idempotencyKey);
+  const auditById = findUniqueRow_(auditSheet, 'auditId', intent.audit.auditId);
+  if (auditByKey && auditById && auditByKey.rowNumber !== auditById.rowNumber) {
+    throw new Error('Intent audit identities point to different rows.');
+  }
+  const auditRow = auditByKey || auditById;
+  const actualAudit = auditRow ? auditStateFromValues_(auditRow.values) : null;
+  const auditState = classifyIntentState_(actualAudit, null, intent.audit, 'Audit');
+
+  if (invitationState === 'target') {
+    const partial = [responseState, auditState].concat(guestStates);
+    if (partial.some((state) => state !== 'target')) {
+      throw new Error('Committed invitation points at an incomplete target state.');
+    }
+  }
+  return {
+    invitationRow,
+    invitationState,
+    responseRow,
+    responseState,
+    guestRowsById,
+    guestStates,
+    auditRow,
+    auditState,
+  };
+}
+
+function classifyIntentState_(actual, base, target, label) {
+  if (statesEqual_(actual, target)) return 'target';
+  if (statesEqual_(actual, base)) return 'base';
+  throw new Error(`${label} is neither the authenticated base nor target state.`);
+}
+
+function assertEntireIntentTarget_(inspection) {
+  if (inspection.invitationState !== 'target'
+      || inspection.responseState !== 'target'
+      || inspection.auditState !== 'target'
+      || inspection.guestStates.some((state) => state !== 'target')) {
+    throw new Error('Submit intent target state is incomplete.');
+  }
+}
+
+function writeResponseTarget_(spreadsheet, intent, existingRow) {
+  const sheet = spreadsheet.getSheetByName(SHEETS_.responses);
+  const rowNumber = existingRow ? existingRow.rowNumber : sheet.getLastRow() + 1;
+  sheet.getRange(rowNumber, 1, 1, HEADERS_.Responses.length)
+    .setValues([HEADERS_.Responses.map((header) => ['email', 'message'].includes(header)
+      ? escapeForSheet_(intent.response[header])
+      : intent.response[header])]);
+}
+
+function assertResponseRowHasNoFormulas_(sheet, row) {
+  const columns = headerIndex_(HEADERS_.Responses);
+  const firstColumn = Math.min(columns.email, columns.message) + 1;
+  const formulas = sheet.getRange(row.rowNumber, firstColumn, 1, 2).getFormulas()[0];
+  if (formulas.some((formula) => formula !== '')) {
+    throw new Error('Response text cell unexpectedly contains a formula.');
+  }
+}
+
+function writeGuestTargets_(spreadsheet, intent, inspection) {
+  const sheet = spreadsheet.getSheetByName(SHEETS_.guestDetails);
+  const columns = headerIndex_(HEADERS_.GuestDetails);
+  intent.guests.forEach((guest, index) => {
+    if (inspection.guestStates[index] === 'target') return;
+    const row = inspection.guestRowsById.get(guest.guestId);
+    sheet.getRange(row.rowNumber, columns.attending + 1, 1, 4).setValues([[
+      guest.attending,
+      guest.mealChoice,
+      guest.revision,
+      new Date(guest.updatedAt),
+    ]]);
+  });
+}
+
+function writeAuditTarget_(spreadsheet, intent) {
+  appendObjectRow_(spreadsheet.getSheetByName(SHEETS_.audit), HEADERS_.Audit, intent.audit);
+}
+
+function writeInvitationTarget_(spreadsheet, intent, inspection) {
+  const sheet = spreadsheet.getSheetByName(SHEETS_.invitations);
+  const columns = headerIndex_(HEADERS_.Invitations);
+  if (inspection.invitationState === 'base') {
+    sheet.getRange(inspection.invitationRow.rowNumber, columns.updatedAt + 1)
+      .setValue(new Date(intent.invitation.updatedAt));
+    SpreadsheetApp.flush();
+    const prepared = inspectSubmitIntentState_(spreadsheet, intent);
+    if (prepared.invitationState !== 'prepared') {
+      throw new Error('Invitation commit metadata was not durably prepared.');
+    }
+  } else if (inspection.invitationState !== 'prepared') {
+    throw new Error('Invitation is not ready for its commit pointer.');
+  }
+  // Literally the final domain cell: all other target state, including the
+  // invitation timestamp, has already crossed a verified flush boundary.
+  sheet.getRange(inspection.invitationRow.rowNumber, columns.currentRevision + 1)
+    .setValue(intent.targetRevision);
+}
+
+function invitationStateFromValues_(values) {
+  return {
+    householdId: normalizeOpaqueId_(values.householdId),
+    currentRevision: values.currentRevision === '' ? 0 : asInteger_(values.currentRevision, 0, 1000001),
+    updatedAt: toIsoTimestamp_(values.updatedAt),
+  };
+}
+
+function responseStateFromValues_(values) {
+  return {
+    responseId: normalizeOpaqueId_(values.responseId),
+    receiptNumber: normalizeReceiptNumber_(values.receiptNumber),
+    householdId: normalizeOpaqueId_(values.householdId),
+    revision: asInteger_(values.revision, 1, 1000001),
+    attending: asBooleanStrict_(values.attending),
+    guestCount: asInteger_(values.guestCount, 0, 20),
+    email: String(values.email || ''),
+    message: String(values.message || ''),
+    submittedAt: toIsoTimestamp_(values.submittedAt),
+    updatedAt: toIsoTimestamp_(values.updatedAt),
+  };
+}
+
+function assertStoredResponseTextValid_(response) {
+  if (response.email.length > 254
+      || (response.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(response.email))
+      || response.message.length > 1000
+      || response.email.normalize('NFC') !== response.email
+      || response.message.normalize('NFC') !== response.message
+      || /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/.test(response.email)
+      || /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/.test(response.message)) {
+    throw new Error('Stored response text is invalid.');
+  }
+}
+
+function guestStateFromValues_(values) {
+  const attending = values.attending === '' ? null : asBooleanStrict_(values.attending);
+  const mealChoice = String(values.mealChoice || '');
+  if (attending === true && !MEAL_CHOICES_.has(mealChoice)) {
+    throw new Error('Stored attending guest has an invalid meal choice.');
+  }
+  if (attending !== true && mealChoice !== '') {
+    throw new Error('Stored absent or unanswered guest has a meal choice.');
+  }
+  return {
+    guestId: normalizeOpaqueId_(values.guestId),
+    attending,
+    mealChoice,
+    revision: values.revision === '' ? 0 : asInteger_(values.revision, 0, 1000001),
+    updatedAt: values.updatedAt === '' ? '' : toIsoTimestamp_(values.updatedAt),
+  };
+}
+
+function auditStateFromValues_(values) {
+  return {
+    auditId: normalizeOpaqueId_(values.auditId),
+    occurredAt: toIsoTimestamp_(values.occurredAt),
+    operation: String(values.operation),
+    outcome: String(values.outcome),
+    householdId: normalizeOpaqueId_(values.householdId),
+    responseId: normalizeOpaqueId_(values.responseId),
+    revision: asInteger_(values.revision, 1, 1000001),
+    idempotencyKey: String(values.idempotencyKey),
+    requestId: String(values.requestId),
+  };
+}
+
+function statesEqual_(left, right) {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function parseInternalJsonObject_(value) {
+  try {
+    const parsed = JSON.parse(value);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      throw new Error('Intent JSON must contain an object.');
+    }
+    return parsed;
+  } catch (error) {
+    throw new Error('Intent JSON is invalid.');
+  }
+}
+
+function assertInternalExactKeys_(value, keys) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)
+      || !arraysEqual_(Object.keys(value).sort(), keys.slice().sort())) {
+    throw new Error('Intent object has unexpected fields.');
+  }
+}
+
+function assertCanonicalIso_(value) {
+  if (typeof value !== 'string' || toIsoTimestamp_(value) !== value) {
+    throw new Error('Intent timestamp is not canonical ISO-8601.');
+  }
+}
+
+function getActiveInvitation_(spreadsheet, tokenHash) {
+  const invitation = getInvitationByTokenHash_(spreadsheet, tokenHash);
+  if (!invitation.active) throw new ApiError_('INVITATION_INVALID');
+  return invitation;
+}
+
+function getInvitationByTokenHash_(spreadsheet, tokenHash) {
+  const row = findUniqueRow_(spreadsheet.getSheetByName(SHEETS_.invitations), 'tokenHash', tokenHash);
+  if (!row) throw new ApiError_('INVITATION_INVALID');
+
+  return {
+    rowNumber: row.rowNumber,
+    householdId: normalizeOpaqueId_(row.values.householdId),
+    displayName: normalizeStoredDisplayName_(row.values.displayName),
+    maxGuests: asInteger_(row.values.maxGuests, 1, 20),
+    active: asBoolean_(row.values.active),
+    currentRevision: row.values.currentRevision === ''
+      ? 0
+      : asInteger_(row.values.currentRevision, 0, 1000000),
+    createdAt: toIsoTimestamp_(row.values.createdAt),
+    updatedAt: toIsoTimestamp_(row.values.updatedAt),
+  };
+}
+
+function getPresetGuests_(spreadsheet, householdId) {
+  const rows = findRows_(spreadsheet.getSheetByName(SHEETS_.guestDetails), 'householdId', householdId);
+  if (rows.length < 1 || rows.length > 20) {
+    throw new Error('Household must have between one and twenty preset guests.');
+  }
+
+  const guests = rows.map((row) => ({
+    rowNumber: row.rowNumber,
+    guestId: normalizeOpaqueId_(row.values.guestId),
+    displayName: normalizeStoredDisplayName_(row.values.displayName),
+    attending: row.values.attending,
+    mealChoice: row.values.mealChoice,
+    revision: row.values.revision,
+    updatedAt: row.values.updatedAt,
+  }));
+  if (new Set(guests.map((guest) => guest.guestId)).size !== guests.length) {
+    throw new Error('GuestDetails contains duplicate guest IDs for a household.');
+  }
+  return guests;
+}
+
+function assertGuestCapacity_(presetGuests, maxGuests) {
+  if (presetGuests.length > maxGuests) {
+    throw new Error('Provisioning invalid: preset guest count exceeds maxGuests.');
+  }
+}
+
+function getCurrentRsvp_(spreadsheet, invitation, presetGuests) {
+  const responseSheet = spreadsheet.getSheetByName(SHEETS_.responses);
+  const response = findUniqueRow_(responseSheet, 'householdId', invitation.householdId);
+  if (invitation.currentRevision === 0) {
+    if (response) throw new Error('Initial invitation unexpectedly has a response row.');
+    for (const guest of presetGuests) {
+      const state = guestStateFromValues_(guest);
+      if (state.revision !== 0
+          || state.attending !== null
+          || state.mealChoice !== ''
+          || state.updatedAt !== '') {
+        throw new Error('Initial GuestDetails contains unexpected RSVP state.');
+      }
+    }
+    return null;
+  }
+
+  if (!response
+      || asInteger_(response.values.revision, 0, 1000000) !== invitation.currentRevision) {
+    throw new Error('Current response is missing or has a different revision.');
+  }
+  assertResponseRowHasNoFormulas_(responseSheet, response);
+  const storedResponse = responseStateFromValues_(response.values);
+  if (storedResponse.householdId !== invitation.householdId
+      || storedResponse.revision !== invitation.currentRevision) {
+    throw new Error('Stored response binding does not match the invitation.');
+  }
+  assertStoredResponseTextValid_(storedResponse);
+
+  const guests = presetGuests.map((guest) => {
+    const state = guestStateFromValues_(guest);
+    if (state.revision !== invitation.currentRevision
+        || typeof state.attending !== 'boolean'
+        || state.updatedAt === '') {
+      throw new Error('GuestDetails does not match the current revision.');
+    }
+    if (state.attending) {
+      return { guestId: guest.guestId, attending: true, mealChoice: state.mealChoice };
+    }
+    return { guestId: guest.guestId, attending: false };
+  });
+
+  const attending = storedResponse.attending;
+  const attendingCount = guests.filter((guest) => guest.attending).length;
+  if (attending !== guests.some((guest) => guest.attending)) {
+    throw new Error('Response attendance does not match GuestDetails.');
+  }
+  if (storedResponse.guestCount !== attendingCount) {
+    throw new Error('Response guestCount does not match GuestDetails.');
+  }
+
+  const current = {
+    revision: invitation.currentRevision,
+    receiptNumber: storedResponse.receiptNumber,
+    attending,
+    guests,
+    updatedAt: storedResponse.updatedAt,
+  };
+  const email = storedResponse.email;
+  const message = storedResponse.message;
+  if (email) current.email = email;
+  if (message) current.message = message;
+  return current;
+}
+
+function assertExactPresetGuestIds_(presetGuests, submittedGuests) {
+  if (presetGuests.length !== submittedGuests.length) {
+    throw new ApiError_('INVITATION_INVALID');
+  }
+  const presetIds = new Set(presetGuests.map((guest) => guest.guestId));
+  if (submittedGuests.some((guest) => !presetIds.has(guest.guestId))) {
+    throw new ApiError_('INVITATION_INVALID');
+  }
+}
+
+function generateReceiptNumber_(responsesSheet) {
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    const candidate = `RSVP-${Utilities.getUuid().replace(/-/g, '').slice(0, 12).toUpperCase()}`;
+    if (!findUniqueRow_(responsesSheet, 'receiptNumber', candidate)) return candidate;
+  }
+  throw new Error('Could not generate a unique receipt number.');
+}
+
+function generateUniqueUuid_(sheet, columnName) {
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    const candidate = Utilities.getUuid();
+    if (!findUniqueRow_(sheet, columnName, candidate)) return candidate;
+  }
+  throw new Error(`Could not generate a unique ${sheet.getName()}.${columnName} value.`);
+}
+
+function normalizeReceiptNumber_(value) {
+  const normalized = String(value || '').trim();
+  if (!RECEIPT_NUMBER_PATTERN_.test(normalized)) {
+    throw new Error('Stored receipt number is invalid.');
+  }
+  return normalized;
+}
+
+function rejectReplayedRequestId_(spreadsheet, requestId) {
+  const existing = findUniqueRow_(
+    spreadsheet.getSheetByName(SHEETS_.idempotency),
+    'requestId',
+    requestId,
+  );
+  if (existing) throw new ApiError_('RATE_LIMITED');
+}
+
+function appendIdempotencyRow_(spreadsheet, values) {
+  appendObjectRow_(
+    spreadsheet.getSheetByName(SHEETS_.idempotency),
+    HEADERS_.Idempotency,
+    values,
+  );
+}
+
+function getReadySpreadsheet_() {
+  const spreadsheet = getConfiguredSpreadsheet_();
+  assertExpectedOwner_(spreadsheet);
+  assertSchema_(spreadsheet);
+  return spreadsheet;
+}
+
+function getConfiguredSpreadsheet_() {
+  const spreadsheetId = getRequiredProperty_('SPREADSHEET_ID');
+  try {
+    return SpreadsheetApp.openById(spreadsheetId);
+  } catch (error) {
+    throw new Error('SPREADSHEET_ID is inaccessible or invalid.');
+  }
+}
+
+function assertExpectedOwner_(spreadsheet) {
+  const expectedOwner = getRequiredProperty_('SHEET_OWNER_EMAIL').trim().toLowerCase();
+  const actualOwner = spreadsheet.getOwner().getEmail().trim().toLowerCase();
+  if (!actualOwner || actualOwner !== expectedOwner) {
+    throw new Error('The configured spreadsheet has an unexpected owner.');
+  }
+}
+
+function assertRsvpOpen_() {
+  const now = Date.now();
+  const closeAt = Date.parse(getRequiredProperty_('RSVP_CLOSE_AT'));
+  if (!Number.isFinite(closeAt)) throw new Error('RSVP_CLOSE_AT must be an ISO-8601 timestamp.');
+  if (now >= closeAt || (getEnvironment_() === 'production' && now >= Date.parse(RETENTION_DELETE_BY_))) {
+    throw new ApiError_('RSVP_CLOSED');
+  }
+}
+
+function assertPendingRecoveryBeforeRetention_() {
+  if (getEnvironment_() === 'production' && Date.now() >= Date.parse(RETENTION_DELETE_BY_)) {
+    throw new ApiError_('RSVP_CLOSED');
+  }
+}
+
+function getEnvironment_() {
+  const environment = getRequiredProperty_('ENVIRONMENT').trim().toLowerCase();
+  if (!['test', 'production'].includes(environment)) {
+    throw new Error('ENVIRONMENT must be test or production.');
+  }
+  return environment;
+}
+
+function buildSheetClearPreview_(spreadsheet, now) {
+  const environment = getEnvironment_();
+  const rowCounts = {};
+  for (const sheetName of Object.values(SHEETS_)) {
+    rowCounts[sheetName] = Math.max(0, spreadsheet.getSheetByName(sheetName).getLastRow() - 1);
+  }
+  return {
+    environment,
+    spreadsheetId: spreadsheet.getId(),
+    permanentDeleteBy: RETENTION_DELETE_BY_,
+    permanentDeletionOverdue: now.getTime() >= Date.parse(RETENTION_DELETE_BY_),
+    eligibleNow: environment === 'test'
+      || now.getTime() >= Date.parse(PRODUCTION_SHEET_CLEAR_EARLIEST_),
+    rowCounts,
+    confirmationValue: `CLEAR:${environment}:${spreadsheet.getId()}:ALL_RSVP_CELLS`,
+  };
+}
+
+function assertSchema_(spreadsheet) {
+  for (const sheetName of Object.values(SHEETS_)) {
+    const sheet = spreadsheet.getSheetByName(sheetName);
+    const headers = HEADERS_[sheetName];
+    if (!sheet) throw new Error(`Missing required sheet ${sheetName}.`);
+    const actualHeaders = sheet.getRange(1, 1, 1, headers.length).getDisplayValues()[0];
+    if (!arraysEqual_(actualHeaders, headers)) {
+      throw new Error(`Sheet ${sheetName} has unexpected headers.`);
+    }
+  }
+}
+
+function findUniqueRow_(sheet, columnName, expectedValue) {
+  const matches = findRows_(sheet, columnName, expectedValue);
+  if (matches.length > 1) {
+    throw new Error(`${sheet.getName()}.${columnName} contains duplicate values.`);
+  }
+  return matches[0] || null;
+}
+
+function findRows_(sheet, columnName, expectedValue) {
+  const headers = HEADERS_[sheet.getName()];
+  const columnIndex = headerIndex_(headers)[columnName];
+  if (columnIndex === undefined) {
+    throw new Error(`Unknown ${sheet.getName()} column ${columnName}.`);
+  }
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 2) return [];
+
+  const rows = sheet.getRange(2, 1, lastRow - 1, headers.length).getValues();
+  const expected = String(expectedValue);
+  const matches = [];
+  rows.forEach((row, index) => {
+    if (String(row[columnIndex]) === expected) {
+      const values = {};
+      headers.forEach((header, headerPosition) => {
+        values[header] = row[headerPosition];
+      });
+      matches.push({ rowNumber: index + 2, values });
+    }
+  });
+  return matches;
+}
+
+function appendObjectRow_(sheet, headers, values) {
+  const row = headers.map((header) => values[header] === undefined ? '' : values[header]);
+  sheet.getRange(sheet.getLastRow() + 1, 1, 1, row.length).setValues([row]);
+}
+
+function withScriptLock_(callback) {
+  const lock = LockService.getScriptLock();
+  if (!lock.tryLock(LOCK_TIMEOUT_MILLISECONDS_)) throw new ApiError_('WRITER_BUSY');
+  try {
+    return callback();
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function parseJsonObject_(value) {
+  let parsed;
+  try {
+    parsed = JSON.parse(value);
+  } catch (error) {
+    throw new ApiError_('WRITER_BUSY');
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new ApiError_('WRITER_BUSY');
+  }
+  return parsed;
+}
+
+function extractResponseRequestId_(event) {
+  try {
+    if (!event || !event.postData || typeof event.postData.contents !== 'string') return 'invalid';
+    const envelope = JSON.parse(event.postData.contents);
+    return envelope
+      && typeof envelope === 'object'
+      && !Array.isArray(envelope)
+      && typeof envelope.requestId === 'string'
+      && REQUEST_ID_PATTERN_.test(envelope.requestId)
+      ? envelope.requestId
+      : 'invalid';
+  } catch (error) {
+    return 'invalid';
+  }
+}
+
+function assertExactKeys_(value, keys) {
+  const actual = Object.keys(value).sort();
+  const expected = keys.slice().sort();
+  if (!arraysEqual_(actual, expected)) throw new ApiError_('WRITER_BUSY');
+}
+
+function assertAllowedAndRequiredKeys_(value, required, optional) {
+  const actual = Object.keys(value);
+  const allowed = new Set(required.concat(optional));
+  if (required.some((key) => !Object.prototype.hasOwnProperty.call(value, key))
+      || actual.some((key) => !allowed.has(key))) {
+    throw new ApiError_('WRITER_BUSY');
+  }
+}
+
+function normalizeTokenHash_(value) {
+  if (typeof value !== 'string' || !TOKEN_HASH_PATTERN_.test(value)) {
+    throw new ApiError_('INVITATION_INVALID');
+  }
+  return value;
+}
+
+function normalizeOpaqueId_(value) {
+  const normalized = String(value || '').trim();
+  if (!OPAQUE_ID_PATTERN_.test(normalized)) throw new Error('Stored opaque ID is invalid.');
+  return normalized;
+}
+
+function normalizeStoredDisplayName_(value) {
+  const normalized = unescapeFromSheet_(value).trim();
+  if (!normalized || normalized.length > 160) throw new Error('Stored display name is invalid.');
+  return normalized;
+}
+
+function normalizeOptionalString_(value, maxLength) {
+  if (value === undefined || value === null || value === '') return '';
+  if (typeof value !== 'string') throw new ApiError_('WRITER_BUSY');
+  const normalized = value.normalize('NFC').replace(/\r\n?/g, '\n').trim();
+  if (normalized.length > maxLength
+      || /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/.test(normalized)) {
+    throw new ApiError_('WRITER_BUSY');
+  }
+  return normalized;
+}
+
+function escapeForSheet_(value) {
+  const text = String(value === undefined || value === null ? '' : value);
+  // Prefix every potentially interpreted value, including a literal leading
+  // apostrophe. Sheets consumes exactly this one text prefix; getValues then
+  // returns the original logical string without heuristic unescaping.
+  return /^\s*[=+\-@']/.test(text) ? `'${text}` : text;
+}
+
+function unescapeFromSheet_(value) {
+  return String(value === undefined || value === null ? '' : value);
+}
+
+function asBoolean_(value) {
+  return value === true || String(value).trim().toLowerCase() === 'true';
+}
+
+function asBooleanStrict_(value) {
+  if (value === true || value === false) return value;
+  const normalized = String(value).trim().toLowerCase();
+  if (normalized === 'true') return true;
+  if (normalized === 'false') return false;
+  throw new Error('Stored boolean is invalid.');
+}
+
+function asInteger_(value, minimum, maximum) {
+  const numeric = Number(value);
+  if (!Number.isSafeInteger(numeric) || numeric < minimum || numeric > maximum) {
+    throw new Error(`Stored integer must be between ${minimum} and ${maximum}.`);
+  }
+  return numeric;
+}
+
+function toIsoTimestamp_(value) {
+  const parsed = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(parsed.getTime())) throw new Error('Stored timestamp is invalid.');
+  return parsed.toISOString();
+}
+
+function getRequiredProperty_(name) {
+  const value = PropertiesService.getScriptProperties().getProperty(name);
+  if (!value || !value.trim()) throw new Error(`Missing required Script Property ${name}.`);
+  if (name === 'WRITER_HMAC_SECRET' && value.length < 32) {
+    throw new Error('WRITER_HMAC_SECRET must contain at least 32 characters.');
+  }
+  return value;
+}
+
+function getIntegerProperty_(name, fallback, minimum, maximum) {
+  const raw = PropertiesService.getScriptProperties().getProperty(name);
+  if (raw === null || raw === '') return fallback;
+  const numeric = Number(raw);
+  if (!Number.isInteger(numeric) || numeric < minimum || numeric > maximum) {
+    throw new Error(`${name} must be an integer between ${minimum} and ${maximum}.`);
+  }
+  return numeric;
+}
+
+function setTextColumnFormats_(sheet, headers, columnNames) {
+  const columns = headerIndex_(headers);
+  const rowCount = Math.max(1, sheet.getMaxRows() - 1);
+  for (const columnName of columnNames) {
+    sheet.getRange(2, columns[columnName] + 1, rowCount, 1).setNumberFormat('@');
+  }
+}
+
+function ensureColumnCapacity_(sheet, requiredColumns) {
+  if (sheet.getMaxColumns() < requiredColumns) {
+    sheet.insertColumnsAfter(sheet.getMaxColumns(), requiredColumns - sheet.getMaxColumns());
+  }
+}
+
+function headerIndex_(headers) {
+  const result = {};
+  headers.forEach((header, index) => { result[header] = index; });
+  return result;
+}
+
+function arraysEqual_(left, right) {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+
+function sha256Hex_(value) {
+  const bytes = Utilities.computeDigest(
+    Utilities.DigestAlgorithm.SHA_256,
+    value,
+    Utilities.Charset.UTF_8,
+  );
+  return bytes.map((byte) => ((byte + 256) % 256).toString(16).padStart(2, '0')).join('');
+}
+
+function hmacSha256Base64Url_(value, secret) {
+  const bytes = Utilities.computeHmacSha256Signature(
+    value,
+    secret,
+    Utilities.Charset.UTF_8,
+  );
+  return Utilities.base64EncodeWebSafe(bytes).replace(/=+$/g, '');
+}
+
+function decodeBase64UrlUtf8_(value) {
+  try {
+    return Utilities.newBlob(Utilities.base64DecodeWebSafe(value)).getDataAsString('UTF-8');
+  } catch (error) {
+    throw new ApiError_('WRITER_BUSY');
+  }
+}
+
+function constantTimeEqual_(left, right) {
+  if (typeof left !== 'string' || typeof right !== 'string') return false;
+  let difference = left.length ^ right.length;
+  const length = Math.max(left.length, right.length);
+  for (let index = 0; index < length; index += 1) {
+    difference |= (left.charCodeAt(index % Math.max(left.length, 1)) || 0)
+      ^ (right.charCodeAt(index % Math.max(right.length, 1)) || 0);
+  }
+  return difference === 0;
+}
+
+function errorOutput_(requestId, code) {
+  return jsonOutput_({
+    version: PROTOCOL_VERSION_,
+    requestId,
+    ok: false,
+    error: { code },
+  });
+}
+
+function jsonOutput_(value) {
+  return ContentService.createTextOutput(JSON.stringify(value))
+    .setMimeType(ContentService.MimeType.JSON);
+}

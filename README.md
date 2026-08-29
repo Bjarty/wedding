@@ -1,20 +1,57 @@
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
-</div>
+# Lisette & Bjarty
 
-# Run and deploy your AI Studio app
+De broncode voor `lisetteenbjarty.nl`. De statische React-site wordt vanaf
+`main` met GitHub Pages gepubliceerd. De RSVP-integratie is standaard
+uitgeschakeld en wordt pas zichtbaar wanneer de publieke frontendconfiguratie
+voor de geteste API is ingevuld.
 
-This contains everything you need to run your app locally.
+## Lokaal werken
 
-View your app in AI Studio: https://ai.studio/apps/e9fcfac5-eda9-4b2d-b5ad-d13366a1975f
+Vereist: Node.js 22.
 
-## Run Locally
+```sh
+npm ci
+npm run dev
+```
 
-**Prerequisites:**  Node.js
+Voer voor iedere overdracht uit:
 
+```sh
+npm run check
+npm run build
+```
 
-1. Install dependencies:
-   `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
-3. Run the app:
-   `npm run dev`
+`dist/CNAME` moet na de build exact `lisetteenbjarty.nl` bevatten.
+
+## RSVP-configuratie
+
+Kopieer `.env.example` naar `.env.local` en vul uitsluitend de publieke
+waarden in wanneer de testomgeving gereed is:
+
+```text
+VITE_RSVP_ENABLED=false
+VITE_RSVP_API_BASE_URL=https://...
+VITE_TURNSTILE_SITE_KEY=...
+```
+
+Zet `VITE_RSVP_ENABLED` uitsluitend voor een goedgekeurde lokale test of
+productieactivering exact op `true`. Zonder die expliciete vlag én beide andere
+waarden blijft de veilige melding “RSVP opent binnenkort” staan.
+Een Turnstile-sitekey en API-URL zijn openbaar; writer-URL's, HMAC-sleutels,
+Turnstile-secrets en uitnodigingstoken-secrets horen nooit in een `VITE_`
+variabele of in Git.
+
+Voor Pages leest de build deze drie waarden als repositoryvariabelen onder
+**Settings → Secrets and variables → Actions → Variables**. Ze komen bewust
+niet uit secrets of alleen uit de `github-pages`-environment. Stel ze pas in
+nadat de afzonderlijke testomgeving end-to-end is goedgekeurd.
+
+De serveronderdelen en handmatige inrichtingsstappen staan in
+[`rsvp/worker`](rsvp/worker) en [`rsvp/apps-script`](rsvp/apps-script).
+
+## Publiceren
+
+Pull requests worden eerst gebouwd. Een merge naar `main` maakt daarna een
+GitHub Pages-artifact en publiceert dat via de ingestelde Pages-omgeving. Voer
+`npm run deploy` niet handmatig uit; de bestaande `gh-pages`-branch blijft
+onaangeraakt.

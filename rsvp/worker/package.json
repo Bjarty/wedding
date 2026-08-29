@@ -1,0 +1,15 @@
+{
+  "name": "@lisette-bjarty/rsvp-worker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "check": "tsc --noEmit -p tsconfig.json",
+    "test": "npm run build && node --test test/*.test.mjs",
+    "provision:invitation": "node scripts/provision-invitation.mjs"
+  },
+  "devDependencies": {
+    "typescript": "~5.8.2"
+  }
+}

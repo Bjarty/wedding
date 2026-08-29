@@ -16,3 +16,5 @@
 - Never run `npm run deploy`, modify or delete `gh-pages`, push commits, or change GitHub/Pages settings without explicit approval.
 - Keep both `CNAME` files synchronized and never commit secrets, `.env` files, `node_modules`, or `dist`.
 - Give workflows least privilege and pin third-party Actions to immutable commit SHAs.
+- Keep RSVP fail-closed unless activation is explicitly approved. Never put raw invitation tokens in Git, Sheets, application/CI logs, or query strings; writer URLs, HMAC values, and Turnstile secrets also never belong in Git or `VITE_` variables.
+- Do not deploy or reconfigure Cloudflare, Apps Script, Sheets, DNS, or mail as part of a code change; first show the tested diff and exact migration steps.

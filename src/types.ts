@@ -39,6 +39,12 @@ export interface DressCodeColor {
   foreground: 'light' | 'dark';
 }
 
+export interface DressCodeInspiration {
+  id: string;
+  image: `/images/${string}`;
+  alt: string;
+}
+
 export type HoneymoonIcon = 'sun' | 'wind' | 'camera' | 'map-pin';
 
 export interface HoneymoonStop {
@@ -118,6 +124,8 @@ export interface SiteContent {
     eyebrow: string;
     heading: string;
     introduction: string;
+    inspirationLabel: string;
+    inspiration: DressCodeInspiration[];
     colorsLabel: string;
     colors: DressCodeColor[];
     printNote: string;
@@ -151,6 +159,46 @@ export interface SiteContent {
     statusHeading: string;
     statusMessage: string;
     contactLabel: string;
+    form: {
+      invitationHeading: string;
+      wrongNamesMessage: string;
+      attendanceQuestionPrefix: string;
+      attendanceYesLabel: string;
+      attendanceNoLabel: string;
+      mealQuestionPrefix: string;
+      mealChoices: {
+        fish: string;
+        meat: string;
+        vegetarian: string;
+        vegan: string;
+      };
+      emailLabel: string;
+      emailHelper: string;
+      emailConfirmationNote: string;
+      messageLabel: string;
+      messageHelper: string;
+      submitLabel: string;
+      updateLabel: string;
+      privacyHeading: string;
+      privacyMessage: string;
+    };
+    states: {
+      loading: string;
+      invalidLink: string;
+      loadError: string;
+      offline: string;
+      submitting: string;
+      validationError: string;
+      submitError: string;
+      conflict: string;
+      rateLimited: string;
+      closed: string;
+      success: string;
+      receiptLabel: string;
+      receiptHelper: string;
+      retryLabel: string;
+      loadLatestLabel: string;
+    };
   };
   footer: {
     coupleLabel: string;

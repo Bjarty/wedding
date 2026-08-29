@@ -23,6 +23,15 @@ import { parseResolveRequest, parseSubmitRequest } from './validation.js';
 const defaultDependencies: RuntimeDependencies = {
   fetch: (input, init) => fetch(input, init),
   crypto: globalThis.crypto,
+  sha256Hex: async (value) => {
+    const digest = await globalThis.crypto.subtle.digest(
+      'SHA-256',
+      new TextEncoder().encode(value),
+    );
+    return [...new Uint8Array(digest)]
+      .map((byte) => byte.toString(16).padStart(2, '0'))
+      .join('');
+  },
   now: () => Date.now(),
   randomUUID: () => globalThis.crypto.randomUUID(),
 };
@@ -141,7 +150,7 @@ export const handleRequest = async (
   let corsOrigin: string | undefined;
 
   try {
-    assertEnvironment(env);
+    await assertEnvironment(env, dependencies);
 
     const origin = request.headers.get('origin');
     if (origin === null || origin !== env.ALLOWED_ORIGIN) {

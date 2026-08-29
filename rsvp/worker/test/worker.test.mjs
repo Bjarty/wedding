@@ -12,6 +12,8 @@ const IDEMPOTENCY_KEY = '11111111-1111-4111-8111-111111111111';
 const RAW_TOKEN = 'AbCdEfGhIjKlMnOpQrStUvWxYz0123456789_-token';
 const HASH_SECRET = 'token-hash-secret-that-is-at-least-32-bytes';
 const WRITER_SECRET = 'writer-signing-secret-that-is-at-least-32-bytes';
+const DUMMY_SECRET_PLACEHOLDER = 'turnstile-dummy-secret-supplied-outside-git';
+const DUMMY_SECRET_SHA256 = 'fb8f35129df87662c650ada12fd614f1b58dce4a37fdd7589ba3a6b9a78c0aae';
 
 const allowRateLimit = { limit: async () => ({ success: true }) };
 
@@ -85,11 +87,21 @@ const hmacBase64Url = async (secret, value) => {
   return Buffer.from(signature).toString('base64url');
 };
 
-const makeDependencies = (fetchImpl) => ({
+const sha256Hex = async (value) => {
+  const digest = await webcrypto.subtle.digest('SHA-256', new TextEncoder().encode(value));
+  return Buffer.from(digest).toString('hex');
+};
+
+const testDummySecretFingerprint = async (value) =>
+  value === DUMMY_SECRET_PLACEHOLDER ? DUMMY_SECRET_SHA256 : sha256Hex(value);
+
+const makeDependencies = (fetchImpl, overrides = {}) => ({
   fetch: fetchImpl,
   crypto: webcrypto,
+  sha256Hex,
   now: () => 1_800_000_000_000,
   randomUUID: () => REQUEST_ID,
+  ...overrides,
 });
 
 const makeHappyFetch = ({ action, writerData, onWriter }) => {
@@ -193,6 +205,104 @@ test('allows only the exact local browser origin in the isolated test environmen
     makeDependencies(async () => { throw new Error('must not fetch'); }),
   );
   assert.equal(rejected.status, 403);
+});
+
+test('allows Cloudflare dummy action only in the isolated localhost test environment', async () => {
+  const testEnv = {
+    ...baseEnv,
+    ALLOWED_ORIGIN: 'http://localhost:3000',
+    TURNSTILE_EXPECTED_ACTION: 'test',
+    TURNSTILE_EXPECTED_HOSTNAME: 'localhost',
+    TURNSTILE_SECRET: DUMMY_SECRET_PLACEHOLDER,
+  };
+  const dependencies = makeDependencies(async (input, init = {}) => {
+    if (String(input).includes('/turnstile/v0/siteverify')) {
+      return Response.json({ success: true, hostname: 'localhost', action: 'test' });
+    }
+    const envelope = JSON.parse(String(init.body));
+    return Response.json({
+      version: 'v1',
+      requestId: envelope.requestId,
+      ok: true,
+      data: resolveData,
+    });
+  }, { sha256Hex: testDummySecretFingerprint });
+  const accepted = await handleRequest(
+    makeRequest(
+      '/v1/households/resolve',
+      { inviteToken: RAW_TOKEN, turnstileToken: 'turnstile-token' },
+      { origin: 'http://localhost:3000' },
+    ),
+    testEnv,
+    dependencies,
+  );
+  assert.equal(accepted.status, 200);
+
+  for (const unsafeEnv of [
+    { ...testEnv, ALLOWED_ORIGIN: ORIGIN },
+    { ...testEnv, TURNSTILE_EXPECTED_ACTION: 'rsvp_resolve' },
+    { ...testEnv, TURNSTILE_SECRET: 'production-like-secret-long-enough' },
+  ]) {
+    const rejected = await handleRequest(
+      makeRequest(
+        '/v1/households/resolve',
+        { inviteToken: RAW_TOKEN, turnstileToken: 'turnstile-token' },
+        { origin: unsafeEnv.ALLOWED_ORIGIN },
+      ),
+      unsafeEnv,
+      makeDependencies(async () => {
+        throw new Error('must not fetch');
+      }, { sha256Hex: testDummySecretFingerprint }),
+    );
+    assert.equal(rejected.status, 503);
+    assert.equal((await parseJson(rejected)).error.code, 'CONFIGURATION_ERROR');
+  }
+});
+
+test('accepts only Cloudflare\'s marked literal dummy response in the isolated test environment', async () => {
+  const testEnv = {
+    ...baseEnv,
+    ALLOWED_ORIGIN: 'http://localhost:3000',
+    TURNSTILE_EXPECTED_ACTION: 'test',
+    TURNSTILE_EXPECTED_HOSTNAME: 'localhost',
+    TURNSTILE_SECRET: DUMMY_SECRET_PLACEHOLDER,
+  };
+  const makeLiteralFetch = (metadata = { result_with_testing_key: true }) => async (input, init = {}) => {
+    if (String(input).includes('/turnstile/v0/siteverify')) {
+      return Response.json({ success: true, hostname: 'example.com', metadata });
+    }
+    const envelope = JSON.parse(String(init.body));
+    return Response.json({
+      version: 'v1',
+      requestId: envelope.requestId,
+      ok: true,
+      data: resolveData,
+    });
+  };
+  const request = () =>
+    makeRequest(
+      '/v1/households/resolve',
+      { inviteToken: RAW_TOKEN, turnstileToken: 'XXXX.DUMMY.TOKEN.XXXX' },
+      { origin: 'http://localhost:3000' },
+    );
+
+  const accepted = await handleRequest(
+    request(),
+    testEnv,
+    makeDependencies(makeLiteralFetch(), { sha256Hex: testDummySecretFingerprint }),
+  );
+  assert.equal(accepted.status, 200);
+
+  const rejected = await handleRequest(
+    request(),
+    testEnv,
+    makeDependencies(
+      makeLiteralFetch({ result_with_testing_key: false }),
+      { sha256Hex: testDummySecretFingerprint },
+    ),
+  );
+  assert.equal(rejected.status, 403);
+  assert.equal((await parseJson(rejected)).error.code, 'CHALLENGE_FAILED');
 });
 
 test('resolve verifies Turnstile, hashes the invitation token, and signs the writer envelope', async () => {

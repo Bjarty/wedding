@@ -37,6 +37,7 @@ export interface Env {
   INVITATION_TOKEN_HASH_SECRET: string;
   RESOLVE_RATE_LIMITER: RateLimitBinding;
   SUBMIT_RATE_LIMITER: RateLimitBinding;
+  TURNSTILE_EXPECTED_ACTION?: string;
   TURNSTILE_EXPECTED_HOSTNAME: string;
   TURNSTILE_SECRET: string;
   WRITER_URL: string;
@@ -163,6 +164,7 @@ export interface WriterEnvelope {
 export interface RuntimeDependencies {
   fetch: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
   crypto: Crypto;
+  sha256Hex: (value: string) => Promise<string>;
   now: () => number;
   randomUUID: () => string;
 }

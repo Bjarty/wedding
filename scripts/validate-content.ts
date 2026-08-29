@@ -3,6 +3,7 @@ import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 const errors: string[] = [];
+const approvedPaymentOrigins = new Set<string>();
 
 const requireText = (value: string, path: string) => {
   if (value.trim().length === 0) {
@@ -68,6 +69,10 @@ if (siteContent.story.enabled) {
 if (siteContent.honeymoon.enabled) {
   requireItems(siteContent.honeymoon.stops, 'honeymoon.stops');
 }
+if (siteContent.gifts.enabled) {
+  requireItems(siteContent.gifts.route, 'gifts.route');
+  requireItems(siteContent.gifts.contributions, 'gifts.contributions');
+}
 requireUniqueIds(siteContent.navigation.items, 'navigation.items');
 requireUniqueIds(siteContent.story.items, 'story.items');
 requireUniqueIds(siteContent.schedule.events, 'schedule.events');
@@ -75,6 +80,7 @@ requireUniqueIds(siteContent.dressCode.inspiration, 'dressCode.inspiration');
 requireUniqueIds(siteContent.dressCode.colors, 'dressCode.colors');
 requireUniqueIds(siteContent.location.travelOptions, 'location.travelOptions');
 requireUniqueIds(siteContent.honeymoon.stops, 'honeymoon.stops');
+requireUniqueIds(siteContent.gifts.contributions, 'gifts.contributions');
 requireUniqueIds(siteContent.footer.links, 'footer.links');
 
 const sectionIds = [
@@ -83,6 +89,7 @@ const sectionIds = [
   siteContent.dressCode.sectionId,
   siteContent.location.sectionId,
   ...(siteContent.honeymoon.enabled ? [siteContent.honeymoon.sectionId] : []),
+  ...(siteContent.gifts.enabled ? [siteContent.gifts.sectionId] : []),
   siteContent.rsvp.sectionId,
 ];
 const sectionIdSet = new Set(sectionIds);
@@ -124,6 +131,90 @@ for (const stop of siteContent.honeymoon.stops) {
   requireHttpUrl(stop.image, `honeymoon.stops.${stop.id}.image`);
   if (!Number.isInteger(stop.day) || stop.day <= 0) {
     errors.push(`honeymoon.stops.${stop.id}.day must be a positive integer`);
+  }
+}
+
+for (const contribution of siteContent.gifts.contributions) {
+  if (siteContent.gifts.paymentLinksEnabled && !contribution.paymentHref) {
+    errors.push(`gifts.contributions.${contribution.id}.paymentHref is required when payment links are enabled`);
+  }
+  if (siteContent.gifts.paymentLinksEnabled && !contribution.amountLabel) {
+    errors.push(`gifts.contributions.${contribution.id}.amountLabel is required when payment links are enabled`);
+  }
+  if (siteContent.gifts.paymentLinksEnabled && !contribution.recipientLabel) {
+    errors.push(`gifts.contributions.${contribution.id}.recipientLabel is required when payment links are enabled`);
+  }
+  if (!siteContent.gifts.paymentLinksEnabled && contribution.paymentHref) {
+    errors.push(`gifts.contributions.${contribution.id}.paymentHref must be omitted while payment links are disabled`);
+  }
+  if (contribution.paymentHref) {
+    try {
+      const paymentUrl = new URL(contribution.paymentHref);
+      if (paymentUrl.protocol !== 'https:') {
+        errors.push(`gifts.contributions.${contribution.id}.paymentHref must use https`);
+      }
+      if (paymentUrl.username || paymentUrl.password) {
+        errors.push(`gifts.contributions.${contribution.id}.paymentHref must not contain credentials`);
+      }
+      if (
+        siteContent.gifts.paymentProvider &&
+        paymentUrl.origin !== siteContent.gifts.paymentProvider.origin
+      ) {
+        errors.push(`gifts.contributions.${contribution.id}.paymentHref must use the configured provider origin`);
+      }
+      if (
+        siteContent.gifts.paymentProvider &&
+        !paymentUrl.pathname.startsWith(siteContent.gifts.paymentProvider.paymentPathPrefix)
+      ) {
+        errors.push(`gifts.contributions.${contribution.id}.paymentHref must use the configured provider path`);
+      }
+    } catch {
+      errors.push(`gifts.contributions.${contribution.id}.paymentHref must be a valid URL`);
+    }
+  }
+}
+
+if (!siteContent.gifts.enabled && siteContent.gifts.paymentLinksEnabled) {
+  errors.push('gifts.paymentLinksEnabled requires the gifts section to be enabled');
+}
+
+if (siteContent.gifts.paymentLinksEnabled && !siteContent.gifts.paymentProvider) {
+  errors.push('gifts.paymentProvider is required when payment links are enabled');
+}
+
+if (siteContent.gifts.paymentProvider) {
+  const { origin, paymentPathPrefix, privacyHref } = siteContent.gifts.paymentProvider;
+  try {
+    const providerOrigin = new URL(origin);
+    if (
+      providerOrigin.protocol !== 'https:' ||
+      providerOrigin.username ||
+      providerOrigin.password ||
+      providerOrigin.port ||
+      providerOrigin.pathname !== '/' ||
+      providerOrigin.search ||
+      providerOrigin.hash ||
+      origin !== providerOrigin.origin
+    ) {
+      errors.push('gifts.paymentProvider.origin must be a canonical https origin');
+    }
+  } catch {
+    errors.push('gifts.paymentProvider.origin must be a valid URL');
+  }
+
+  if (!approvedPaymentOrigins.has(origin)) {
+    errors.push('gifts.paymentProvider.origin must be explicitly approved in content validation');
+  }
+  if (!paymentPathPrefix.startsWith('/') || paymentPathPrefix === '/') {
+    errors.push('gifts.paymentProvider.paymentPathPrefix must be a non-root path prefix');
+  }
+  try {
+    const privacyUrl = new URL(privacyHref);
+    if (privacyUrl.protocol !== 'https:' || privacyUrl.username || privacyUrl.password) {
+      errors.push('gifts.paymentProvider.privacyHref must be a credential-free https URL');
+    }
+  } catch {
+    errors.push('gifts.paymentProvider.privacyHref must be a valid URL');
   }
 }
 

@@ -9,30 +9,28 @@
     "build": "vite build",
     "typecheck": "tsc --noEmit",
     "validate:content": "tsx scripts/validate-content.ts",
-    "check": "npm run typecheck && npm run validate:content",
+    "test:rsvp-ui": "tsx --test src/features/rsvp/*.test.ts",
+    "test:rsvp-worker": "tsc -p rsvp/worker/tsconfig.json && node --test rsvp/worker/test/*.test.mjs",
+    "test:rsvp-apps-script": "node rsvp/apps-script/test.mjs",
+    "test:rsvp": "npm run test:rsvp-ui && npm run test:rsvp-worker && npm run test:rsvp-apps-script",
+    "check": "npm run typecheck && npm run validate:content && npm run test:rsvp",
     "preview": "vite preview",
     "deploy": "gh-pages -d dist"
   },
   "dependencies": {
-    "@google/genai": "^1.29.0",
-    "@tailwindcss/vite": "^4.1.14",
-    "@vitejs/plugin-react": "^5.0.4",
-    "dotenv": "^17.2.3",
-    "express": "^4.21.2",
     "lucide-react": "^0.546.0",
     "motion": "^12.23.24",
     "react": "^19.0.1",
-    "react-dom": "^19.0.1",
-    "vite": "^6.2.3"
+    "react-dom": "^19.0.1"
   },
   "devDependencies": {
-    "@types/express": "^4.17.21",
+    "@tailwindcss/vite": "^4.1.14",
     "@types/node": "^22.14.0",
-    "autoprefixer": "^10.4.21",
+    "@vitejs/plugin-react": "^5.0.4",
     "gh-pages": "^6.3.0",
     "tailwindcss": "^4.1.14",
-    "tsx": "^4.21.0",
+    "tsx": "^4.23.12",
     "typescript": "~5.8.2",
-    "vite": "^6.2.3"
+    "vite": "^6.4.3"
   }
 }

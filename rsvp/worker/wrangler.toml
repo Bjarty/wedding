@@ -1,0 +1,22 @@
+name = "lisette-bjarty-rsvp-api"
+main = "src/index.ts"
+compatibility_date = "2026-08-29"
+workers_dev = false
+
+[vars]
+ALLOWED_ORIGIN = "https://lisetteenbjarty.nl"
+TURNSTILE_EXPECTED_HOSTNAME = "lisetteenbjarty.nl"
+
+[[ratelimits]]
+name = "RESOLVE_RATE_LIMITER"
+namespace_id = "REPLACE_WITH_RESOLVE_NAMESPACE_ID"
+simple = { limit = 10, period = 60 }
+
+[[ratelimits]]
+name = "SUBMIT_RATE_LIMITER"
+namespace_id = "REPLACE_WITH_SUBMIT_NAMESPACE_ID"
+simple = { limit = 5, period = 60 }
+
+# Configure WRITER_URL, TURNSTILE_SECRET, WRITER_HMAC_SECRET and
+# INVITATION_TOKEN_HASH_SECRET as encrypted Worker secrets. Do not add their
+# values to this file or to Git.

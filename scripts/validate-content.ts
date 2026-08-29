@@ -1,4 +1,6 @@
 import { siteContent } from '../src/content/siteContent';
+import { existsSync } from 'node:fs';
+import { resolve } from 'node:path';
 
 const errors: string[] = [];
 
@@ -57,6 +59,7 @@ const requireHttpUrl = (value: string, path: string) => {
 requireContentStrings(siteContent, 'siteContent');
 requireItems(siteContent.navigation.items, 'navigation.items');
 requireItems(siteContent.schedule.events, 'schedule.events');
+requireItems(siteContent.dressCode.inspiration, 'dressCode.inspiration');
 requireItems(siteContent.dressCode.colors, 'dressCode.colors');
 requireItems(siteContent.location.travelOptions, 'location.travelOptions');
 if (siteContent.story.enabled) {
@@ -68,6 +71,7 @@ if (siteContent.honeymoon.enabled) {
 requireUniqueIds(siteContent.navigation.items, 'navigation.items');
 requireUniqueIds(siteContent.story.items, 'story.items');
 requireUniqueIds(siteContent.schedule.events, 'schedule.events');
+requireUniqueIds(siteContent.dressCode.inspiration, 'dressCode.inspiration');
 requireUniqueIds(siteContent.dressCode.colors, 'dressCode.colors');
 requireUniqueIds(siteContent.location.travelOptions, 'location.travelOptions');
 requireUniqueIds(siteContent.honeymoon.stops, 'honeymoon.stops');
@@ -176,6 +180,18 @@ try {
 for (const color of siteContent.dressCode.colors) {
   if (!/^#[0-9A-Fa-f]{6}$/.test(color.color)) {
     errors.push(`dressCode.colors.${color.id}.color must use six-digit hex format`);
+  }
+}
+
+for (const item of siteContent.dressCode.inspiration) {
+  if (!/^\/images\/dresscode\/[a-z0-9-]+\.webp$/.test(item.image)) {
+    errors.push(`dressCode.inspiration.${item.id}.image must be a local dresscode WebP path`);
+    continue;
+  }
+
+  const publicPath = resolve('public', item.image.slice(1));
+  if (!existsSync(publicPath)) {
+    errors.push(`dressCode.inspiration.${item.id}.image does not exist in public`);
   }
 }
 

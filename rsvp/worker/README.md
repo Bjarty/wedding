@@ -273,8 +273,8 @@ Encrypted Worker secrets:
 - `ACCESS_CODE_HASH_SECRET` (48 random bytes encoded as exactly 64 base64url characters)
 
 All three HMAC secrets must be different. Never put them in `wrangler.toml`, a
-Vite variable, Git, a Sheet cell, or application logs. Use separate secrets and
-Sheets for test and production.
+Vite variable, Git, a Sheet cell, or application logs. Roteer een mogelijk
+gelekte waarde gecoördineerd aan Worker- en writerzijde.
 
 ## Local verification
 
@@ -291,118 +291,22 @@ npm --prefix rsvp/worker test
 ```
 
 `wrangler.toml` is de fail-closed productieconfiguratie en bevat bewust geen
-route, account-ID of secret. Upload deze niet voor de testomgeving. De aparte,
-beoordeelbare [`wrangler.test.toml`](./wrangler.test.toml) zet alleen een
-versie-preview aan en houdt `workers_dev = false`; daardoor wordt geen gewone
-Workerroute, custom domain of DNS-koppeling aangemaakt.
-
-Kopieer de template lokaal naar het door Git genegeerde
-`wrangler.test.local.toml`. Vervang daarin uitsluitend de vier placeholders
-door onderling verschillende positieve integers die nergens anders als
-rate-limit namespace in het Cloudflare-account worden gebruikt. Controleer de
-lokale kopie vóór iedere upload:
-
-```powershell
-Copy-Item rsvp/worker/wrangler.test.toml rsvp/worker/wrangler.test.local.toml
-npm ci --prefix rsvp/worker
-npm --prefix rsvp/worker run validate:test-config:local
-```
-
-Maak de exact genoemde test-Worker `lisette-bjarty-rsvp-api-test` vooraf
-handmatig en beoordeeld aan in het juiste Cloudflare-account, zonder route,
-custom domain of productievariabelen. De repositoryhelper kan geen Worker
-aanmaken of deployen: hij gebruikt uitsluitend `wrangler versions upload`, zet
-automatisch aanmaken uit en faalt als de Worker nog niet bestaat.
-
-Zet vóór iedere preview-upload het expliciete 32-cijferige account-ID alleen in
-de lokale shell. Geef alle vijf testsecrets samen mee vanuit één tijdelijk
-JSON-bestand **buiten de repository**. Gebruik Node.js 22 en verwijder zowel het
-bestand als de shellvariabele direct na een geslaagde of mislukte upload:
-
-```powershell
-$env:CLOUDFLARE_ACCOUNT_ID = '<32-lowercase-hex-account-id>'
-try {
-  npm --prefix rsvp/worker run upload:test -- --secrets-file '<absoluut-tijdelijk-pad>' --turnstile-mode pass
-} finally {
-  Remove-Item Env:CLOUDFLARE_ACCOUNT_ID -ErrorAction SilentlyContinue
-  Remove-Item -LiteralPath '<absoluut-tijdelijk-pad>' -ErrorAction SilentlyContinue
-}
-```
-
-Wrangler bewaart bestaande encrypted secrets bij een gewone upload; een
-`--secrets-file` is additief en een weggelaten secret wordt niet automatisch
-verwijderd. De testwrapper vertrouwt bewust niet op die remote toestand: ook
-bij een code-only wijziging valideert en stuurt hij alle vijf testsecrets uit
-de tijdelijke bundle mee. Haal Cloudflares officiële testsecret privé uit de
-Cloudflare-documentatie; de letterlijke waarde staat bewust niet in Git. Een
-ontbrekend of afwijkend account-ID, een verkeerde testsecret, een extra
-JSON-sleutel of een niet-bestaande Worker laat de wrapper stoppen. Verwijder of
-roteer een remote secret alleen als aparte, expliciet beoordeelde beheeractie.
+route, account-ID of secret. Er is geen externe test-Worker, previewupload of
+Vite-proxy meer. De lokale tests gebruiken uitsluitend mocks en nemen geen
+contact op met Cloudflare of Google.
 
 Genereer `WRITER_HMAC_SECRET`, `INVITATION_TOKEN_HASH_SECRET` en
 `ACCESS_CODE_HASH_SECRET` onafhankelijk van elkaar als 48 cryptografisch
-willekeurige bytes, base64url-gecodeerd tot exact 64 tekens. De wrapper weigert
-hergebruik of duidelijk laag-entropische waarden. Genereer en vervoer deze
+willekeurige bytes, base64url-gecodeerd tot exact 64 tekens. Vervoer deze
 waarden uitsluitend via een beveiligd lokaal proces; print of plak ze niet in
-Git, Sheet, CI, chat, screenshots of tickets. Voor een server-side fouttest
-maak je een aparte
-versie met Cloudflares always-fail testsecret en `--turnstile-mode server-fail`; zet
-de preview na die test terug naar een met `--turnstile-mode pass` geüploade
-versie.
-
-Het script gebruikt de via de aparte Worker-lockfile vastgezette
-`wrangler@4.126.0`, accepteert alleen een absoluut pad naar een JSON-bestand
-buiten de repository en weigert experimentele provisioning en automatisch
-aanmaken. De wrapper voert uitsluitend `wrangler versions upload` uit: die
-versie wordt niet naar productie uitgerold. De expliciet ingeschakelde
-[preview-URL](https://developers.cloudflare.com/workers/versions-and-deployments/preview-urls/)
-is wel publiek. Gebruik daarom alleen synthetische testdata en verwijder of
-deactiveer de preview na afloop. De declaratie `secrets.required` laat de upload
-stoppen als een van `TURNSTILE_SECRET`, `WRITER_URL`, `WRITER_HMAC_SECRET`,
-`INVITATION_TOKEN_HASH_SECRET` of `ACCESS_CODE_HASH_SECRET` ontbreekt. Dit alles
-wijzigt geen TransIP-DNS of nameservers.
-
-De lokale validator kan niet accountbreed bewijzen dat namespace-ID's nog
-ongebruikt zijn; controleer dit daarom apart tegen alle bestaande
-Workerconfiguraties in het gekozen Cloudflare-account. Herhaal de beslissing
-later afzonderlijk voor productie en hergebruik nooit de test-URL,
-namespace-ID's, secrets, Turnstile-configuratie, writerdeployment of Sheet.
-
-Browser-E2E gebeurt vóór live activering vanaf exact
-`http://localhost:3000`. Zet in uitsluitend die test-Worker
-`ALLOWED_ORIGIN=http://localhost:3000` en
-`TURNSTILE_EXPECTED_HOSTNAME=localhost` plus
-`TURNSTILE_EXPECTED_ACTION=test`; `127.0.0.1`, wildcards en cookies zijn
-niet toegestaan. Gebruik Cloudflares [officiële Turnstile-testkeys](https://developers.cloudflare.com/turnstile/troubleshooting/testing/):
-de always-pass sitekey en serversecret voor de reproduceerbare succesflow. Test
-de server-side afwijzing met een token van de always-pass sitekey en een via
-`--turnstile-mode server-fail` geüploade always-fail serversecret. Test de aparte
-clientwidget-fout met de always-fail sitekey; daarbij mag de browser geen
-Worker- of writercall doen. De publieke `workers.dev`-preview bevat alleen synthetische
-huishoudens en blijft rate-limited. Productie gebruikt een andere Worker,
-widget, vier namespace-ID's, HMAC-secrets, credential-hashsecrets,
-writerdeployment en Sheet, met exact `https://lisetteenbjarty.nl` als origin
-en hostname.
-De Worker accepteert daarnaast uitsluitend in deze exact afgebakende
-localhost-testconfig Cloudflares letterlijke `XXXX.DUMMY.TOKEN.XXXX`-respons
-als Siteverify die markeert met `metadata.result_with_testing_key=true`,
-`hostname=example.com` en zonder action. Dit pad is niet bereikbaar met de
-productieconfiguratie of een ander testtoken.
-Start de lokale frontend met `VITE_RSVP_ENABLED=true`,
-`VITE_RSVP_HOUSEHOLD_CODES_ENABLED=true`, de publieke preview-URL en de
-testsitekey in de genegeerde `.env.local`; zet deze waarden niet als live
-GitHub-repositoryvariabelen. Als een lokale browser `workers.dev` blokkeert,
-zet dan `VITE_RSVP_API_BASE_URL=http://localhost:3000/rsvp-test-api` en
-`RSVP_TEST_PROXY_TARGET` op exact de test-previewalias of de voor de test
-vastgezette versie-preview-URL. Vite accepteert voor die proxy uitsluitend de
-benoemde RSVP-test-Worker onder `workers.dev`; de Worker blijft de
-oorspronkelijke localhost-Origin zelf valideren.
+Git, Sheet, CI, chat, screenshots of tickets. Controleer accountbreed dat de
+vier rate-limit namespace-ID's uitsluitend voor de productie-Worker worden
+gebruikt.
 
 ## Fail-closed productieactivering
 
-Deze procedure begint pas nadat de volledige synthetische testmatrix is
-goedgekeurd. Zij gebruikt geen testresource opnieuw en maakt de Worker pas in
-een afzonderlijke, expliciet beoordeelde stap publiek. Voer de commando's vanuit
+Deze procedure gebruikt uitsluitend productieresources en maakt de Worker pas
+in een afzonderlijke, expliciet beoordeelde stap publiek. Voer de commando's vanuit
 de repositoryroot uit met Node.js 22. Vervang alle placeholders uitsluitend in
 lokale, genegeerde bestanden of de lokale shell; zet nooit een echte ID, URL of
 secret in Git, een ticket, chat of screenshot.
@@ -526,20 +430,18 @@ informatielek.
 
 ### 6. Activeer Pages en voer de smoke-test uit
 
-Stel pas nu de vijf openbare GitHub Actions-repositoryvariabelen in:
+Stel de vier openbare GitHub Actions-repositoryvariabelen in:
 
 ```text
 VITE_RSVP_ENABLED=true
 VITE_RSVP_HOUSEHOLD_CODES_ENABLED=true
-VITE_RSVP_CONFIRMATION_EMAIL_ENABLED=false
 VITE_RSVP_API_BASE_URL=<exact-beoordeelde-https-origin>
 VITE_TURNSTILE_SITE_KEY=<publieke-productie-sitekey>
 ```
 
-Laat de mailvlag `false` totdat de afzonderlijke
-[Resend-migratie](../apps-script/README.md#veilige-resend-migratie-en-activering)
-volledig is getest en backend-side actief is. Zet haar pas daarna exact op
-`true`; zij verandert uitsluitend de Pages-tekst en niets in deze Worker.
+De Pages-workflow zet `VITE_RSVP_CONFIRMATION_EMAIL_ENABLED=true` expliciet
+omdat de productie-outbox en Resend-route end-to-end zijn gecontroleerd. Deze
+waarde verandert uitsluitend de Pages-tekst en niets in deze Worker.
 
 Beoordeel de Pages-build en `dist/CNAME`, en test daarna via
 `https://lisetteenbjarty.nl/#rsvp` uitsluitend het synthetische

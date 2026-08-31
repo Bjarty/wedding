@@ -6,12 +6,9 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "check": "tsc --noEmit -p tsconfig.json",
-    "test": "npm run build && node --test test/provision-household-code.test.mjs test/test-config.test.mjs test/worker.test.mjs",
+    "test": "npm run build && node --test test/production-config.test.mjs test/provision-household-code.test.mjs test/worker.test.mjs",
     "provision:household-code": "node scripts/provision-household-code.mjs",
-    "provision:invitation": "node scripts/provision-invitation.mjs",
-    "validate:test-config": "node scripts/validate-test-config.mjs --template wrangler.test.toml",
-    "validate:test-config:local": "node scripts/validate-test-config.mjs wrangler.test.local.toml",
-    "upload:test": "node scripts/upload-test.mjs"
+    "provision:invitation": "node scripts/provision-invitation.mjs"
   },
   "devDependencies": {
     "typescript": "~5.8.2",

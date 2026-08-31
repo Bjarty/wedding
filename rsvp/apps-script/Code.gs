@@ -2835,21 +2835,23 @@ function assertRsvpOpen_() {
   const now = Date.now();
   const closeAt = Date.parse(getRequiredProperty_('RSVP_CLOSE_AT'));
   if (!Number.isFinite(closeAt)) throw new Error('RSVP_CLOSE_AT must be an ISO-8601 timestamp.');
-  if (now >= closeAt || (getEnvironment_() === 'production' && now >= Date.parse(RETENTION_DELETE_BY_))) {
+  getEnvironment_();
+  if (now >= closeAt || now >= Date.parse(RETENTION_DELETE_BY_)) {
     throw new ApiError_('RSVP_CLOSED');
   }
 }
 
 function assertPendingRecoveryBeforeRetention_() {
-  if (getEnvironment_() === 'production' && Date.now() >= Date.parse(RETENTION_DELETE_BY_)) {
+  getEnvironment_();
+  if (Date.now() >= Date.parse(RETENTION_DELETE_BY_)) {
     throw new ApiError_('RSVP_CLOSED');
   }
 }
 
 function getEnvironment_() {
   const environment = getRequiredProperty_('ENVIRONMENT').trim().toLowerCase();
-  if (!['test', 'production'].includes(environment)) {
-    throw new Error('ENVIRONMENT must be test or production.');
+  if (environment !== 'production') {
+    throw new Error('ENVIRONMENT must be production.');
   }
   return environment;
 }
@@ -2865,8 +2867,7 @@ function buildSheetClearPreview_(spreadsheet, now) {
     spreadsheetId: spreadsheet.getId(),
     permanentDeleteBy: RETENTION_DELETE_BY_,
     permanentDeletionOverdue: now.getTime() >= Date.parse(RETENTION_DELETE_BY_),
-    eligibleNow: environment === 'test'
-      || now.getTime() >= Date.parse(PRODUCTION_SHEET_CLEAR_EARLIEST_),
+    eligibleNow: now.getTime() >= Date.parse(PRODUCTION_SHEET_CLEAR_EARLIEST_),
     rowCounts,
     confirmationValue: `CLEAR:${environment}:${spreadsheet.getId()}:ALL_RSVP_CELLS`,
   };

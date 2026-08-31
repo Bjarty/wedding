@@ -11,13 +11,13 @@ browser -> Cloudflare Worker -> gesigneerde Apps Script-web-app -> private Sheet
 ```
 
 De code maakt of wijzigt geen Google-account, Sheet, deployment of
-toegangsinstelling. Test en productie worden bewust handmatig ingericht.
+toegangsinstelling. De productieresources worden bewust handmatig beheerd.
 
 ## Privacy- en eigendomsgrens
 
-- Test- en productie-Sheet zijn eigendom van het vooraf afgesproken
+- De productie-Sheet is eigendom van het vooraf afgesproken
   Google-eigenaaraccount. Het adres daarvan blijft buiten Git.
-- Beide Sheets houden **Algemene toegang: Beperkt** en worden niet publiek
+- De Sheet houdt **Algemene toegang: Beperkt** en wordt niet publiek
   gedeeld.
 - Alleen keyed credential-hashes komen in Sheets en server-to-server requests.
   Ruwe uitnodigingstokens en persoonlijke codes worden niet naar Apps Script
@@ -267,7 +267,7 @@ Open in Apps Script **Projectinstellingen -> Script Properties**:
 
 | Property | Vereist | Waarde |
 | --- | --- | --- |
-| `ENVIRONMENT` | ja | Exact `test` of `production` |
+| `ENVIRONMENT` | ja | Exact `production`; iedere andere waarde faalt gesloten |
 | `SPREADSHEET_ID` | ja | ID van de private Sheet voor deze omgeving |
 | `SHEET_OWNER_EMAIL` | ja | E-mailadres van het Sheet-eigenaaraccount; uitsluitend als private Script Property |
 | `WRITER_HMAC_SECRET` | ja | Willekeurig secret van minimaal 32 tekens; identiek aan de Worker-secret van uitsluitend deze omgeving |
@@ -440,10 +440,10 @@ HTTP-statussen en Nederlandse meldingen.
 
 ## Veilige Resend-migratie en activering
 
-Deze repositorywijziging maakt geen Resend-account, DNS-record, trigger,
-deployment, Script Property of Pages-variabele aan. Voer eerst de volledige
-route uit in een strikt gescheiden testomgeving en laat diff, tests en
-migratiestappen beoordelen. Herhaal daarna gecontroleerd voor productie:
+De externe testomgeving is uitgefaseerd. Voer lokale mocktests uit, maak vóór
+iedere productiemigratie een private Sheetbackup en gebruik vervolgens één
+herkenbaar synthetisch smokehuishouden in productie voordat echte adressen
+worden verwerkt:
 
 1. Maak of selecteer een organisatie-eigendom Resend-account en kies de
    beschikbare EU-verzendroute/regio. Die regio bepaalt de verzendroute en is
@@ -472,11 +472,11 @@ migratiestappen beoordelen. Herhaal daarna gecontroleerd voor productie:
 5. Wacht tot Resend alle vereiste records als geverifieerd toont en controleer
    vanaf een onafhankelijke DNS-check dat website én inkomende TransIP-mail nog
    werken. Stuur nog geen RSVP-mail.
-6. Maak per omgeving een nieuwe API-key met uitsluitend verzendrecht en, als
+6. Maak een productie-API-key met uitsluitend verzendrecht en, als
    Resend dat aanbiedt, beperking tot het exacte verzenddomein. Zet de
    productiekey alleen als `RESEND_API_KEY` in de productie-Script Properties;
    toon of kopieer haar nooit naar Git, Sheet, Pages, Cloudflare, screenshots of
-   testconfiguratie.
+   lokale configuratie.
 7. Stop tijdelijk nieuwe RSVP-writes, maak een afgeschermde Sheetbackup,
    inspecteer en herstel eerst iedere pending `Idempotency`-intent. Kopieer de
    beoordeelde nieuwe writercode en manifest. Voer vervolgens `initSheet()` één
@@ -487,36 +487,22 @@ migratiestappen beoordelen. Herhaal daarna gecontroleerd voor productie:
    `script.external_request`, maak een nieuwe Apps Script-versie en werk de
    bestaande web-appdeployment expliciet naar die versie bij. De Worker-URL,
    Workerconfiguratie en het publieke contract blijven ongewijzigd.
-9. Laat `CONFIRMATION_EMAIL_ENABLED=false`. Zet een beoordeeld
-   `CONFIRMATION_EMAIL_ACTIVATED_AT` in de toekomst als volledig ISO-8601-
-   tijdstip met expliciete zone, bijvoorbeeld `2026-09-15T20:00:00+02:00`
-   (intern wordt dit naar UTC genormaliseerd), configureer de testkey en
-   maak één installable time-driven trigger die
+9. Laat `CONFIRMATION_EMAIL_ENABLED=false` tot de backup, scopes, DNS en
+   domeinbeperkte key zijn gecontroleerd. Zet een beoordeeld
+   `CONFIRMATION_EMAIL_ACTIVATED_AT` als volledig ISO-8601-tijdstip met
+   expliciete zone en maak exact één installable time-driven trigger die
    `processConfirmationEmailOutbox()` iedere minuut uitvoert. Installeer geen
    automatische trigger voor `recoverAllPendingIntents()`.
-10. Zet uitsluitend in de geïsoleerde testomgeving, pas op of na de gekozen
-    synthetische cutoff, tijdelijk `CONFIRMATION_EMAIL_ENABLED=true`. Test met
-    synthetische dag- en avondhuishoudens: zonder adres,
-    eerste submit met adres, wijziging, stabiel ontvangstnummer, identieke retry
-    binnen Resends 24-uurs-idempotencyvenster, providerafwijzing, tijdelijke
-    fout, een onzekere uitkomst met veilige retry en overgang naar
-    `manual_review` na een expliciet conflict of het 24-uursvenster. Controleer
-    één mail per logische submit, geen mail voor
-    pre-cutoff submits, privacyarme inhoud, uitgeschakelde tracking en dat RSVP
-    zelf bij een mailfout opgeslagen blijft. Zet daarna de testflag weer op
-    `false` en schakel de testtrigger uit voordat productie wordt voorbereid.
-11. Herhaal stappen 1–10 afzonderlijk voor productie. Kies daarna een toekomstig
-    productietijdstip, zet `CONFIRMATION_EMAIL_ACTIVATED_AT` exact op die cutoff
-    en pas pas op/na dat tijdstip `CONFIRMATION_EMAIL_ENABLED=true` toe. Controleer
-    de eerste synthetische productiemail en de outbox voordat echte adressen
-    worden gebruikt.
-12. Zet als laatste de openbare GitHub Actions-repositoryvariabele
-    `VITE_RSVP_CONFIRMATION_EMAIL_ENABLED=true` en publiceer een beoordeelde
-    Pages-build. Deze publieke vlag verandert alleen de websitetekst en is niet
-    technisch aan de backendflag gekoppeld; zij activeert geen backendmail.
-    Coördineer beide waarden handmatig en houd rekening met een tijdelijk
-    mismatchvenster tijdens deployment. Iedere andere publieke waarde houdt de
-    geen-mailbelofte zichtbaar.
+10. Zet op of na de cutoff `CONFIRMATION_EMAIL_ENABLED=true` en gebruik één
+    synthetisch productiehuishouden. Controleer duurzame RSVP-opslag, stabiel
+    ontvangstnummer, precies één outboxitem, privacyarme inhoud, tracking uit en
+    één door Resend afgeleverde mail. Een mailfout mag de RSVP niet terugdraaien.
+11. Trek de synthetische huishoudcode na de smokecheck in en verwijder de
+    synthetische persoonsgegevens gecontroleerd. Provision pas daarna echte
+    huishoudens.
+12. De beoordeelde Pages-workflow zet
+    `VITE_RSVP_CONFIRMATION_EMAIL_ENABLED=true` expliciet. Deze publieke waarde
+    verandert alleen de websitetekst en activeert geen backendmail.
 
 ### Mailrollback
 
@@ -526,8 +512,9 @@ providerstoring:
 1. zet backend-side `CONFIRMATION_EMAIL_ENABLED=false` en schakel de
    `processConfirmationEmailOutbox()`-trigger uit; RSVP-resolve en -submit mogen
    blijven werken en blijven het ontvangstnummer op het scherm tonen;
-2. zet `VITE_RSVP_CONFIRMATION_EMAIL_ENABLED=false` en publiceer de beoordeelde
-   Pages-fallback zodat de site geen mail belooft;
+2. zet de workflowliteral `VITE_RSVP_CONFIRMATION_EMAIL_ENABLED` terug op
+   `'false'`, commit die wijziging en publiceer de beoordeelde Pages-fallback
+   zodat de site geen mail belooft;
 3. laat `queued`, `sending`, `retry` en `manual_review`-items staan, inspecteer
    ze onder beperkte toegang en verstuur onzekere items niet blind opnieuw;
 4. trek bij mogelijk sleutelmisbruik de Resend-key in en maak later een nieuwe
@@ -539,20 +526,20 @@ providerstoring:
    uitfaseren, aan de hand van de dan actuele Resend-records en na een aparte
    controle dat website en inkomende TransIP-mail onaangetast blijven.
 
-## Test- en productiedeployment
-
-Richt eerst test volledig in en herhaal de stappen pas daarna voor productie:
+## Productiedeployment en smokecheck
 
 1. Meld aan bij het vooraf afgesproken Google-eigenaaraccount en maak een lege Sheet.
 2. Controleer onder **Delen** dat de eigenaar klopt, **Algemene toegang** op
    **Beperkt** staat en geen ongewenste personen of groepen toegang hebben.
-3. Maak een apart standalone Apps Script-project onder hetzelfde account.
+3. Maak of controleer het standalone productie-Apps-Scriptproject onder
+   hetzelfde account.
    Kopieer `Code.gs` en `appsscript.json` naar het project.
-4. Vul omgevingsspecifieke Script Properties in. Hergebruik geen testsecret,
-   Sheet of deployment in productie.
+4. Vul uitsluitend de productie-Script Properties in. Plaats geen waarde in
+   Git, Sheetcellen of frontendvariabelen.
 5. Voer `initSheet()` handmatig uit, autoriseer alleen de gevraagde scopes en
    controleer alle tabs en exacte headers, inclusief `EmailOutbox`.
-6. Provision testhuishoudens en gasten. Sla alleen de juiste keyed hash op;
+6. Provision eerst één synthetisch smokehuishouden en pas daarna echte
+   huishoudens en gasten. Sla alleen de juiste keyed hash op;
    nooit de ruwe token of huishoudcode. Vul variant en booleanbeleid exact in,
    controleer dat ieder huishouden hooguit `maxGuests` vooraf ingestelde
    `GuestDetails`-rijen heeft en voer voor iedere credential een geldige resolve
@@ -564,18 +551,17 @@ Richt eerst test volledig in en herhaal de stappen pas daarna voor productie:
 9. Laat bevestigingsmail standaard uit. Volg voor mail afzonderlijk de
    [Resend-migratie](#veilige-resend-migratie-en-activering); een gewone
    writerdeployment activeert geen mail.
-10. Voer de volledige testmatrix uit. Maak daarna voor productie een nieuwe
-   Sheet, Apps Script-project, deployment en eigen secrets.
-11. Controleer vóór activatie nogmaals dat de productie-Sheet daadwerkelijk
+10. Controleer de synthetische resolve-, submit-, wijzigings- en mailflow in
+   productie en trek de smokecredential daarna in.
+11. Controleer vóór echte uitnodigingen nogmaals dat de productie-Sheet daadwerkelijk
     eigendom is van het afgesproken Google-eigenaaraccount. Maak in de agenda van die
     eigenaar een verplichte herinnering voor de definitieve verwijderprocedure,
     ruim vóór en uiterlijk op **1 augustus 2027 00:00 Europe/Amsterdam**.
 
-Test daarnaast handmatig het herstelpad: laat uitsluitend in de testomgeving
-een request na de durable intent mislukken, controleer `status=pending`, voer
-`recoverAllPendingIntents()` uit en verifieer precies één Response, één Audit,
-alle gastrevisions, de stabiele receipt en `status=completed`. Activeer geen
-productie-Worker zolang een pending of ongeldige intent resteert.
+De lokale Apps Script-mocktests injecteren fouten na iedere duurzame grens en
+dekken het herstelpad zonder productiegegevens te muteren. Voer in productie
+geen opzettelijke foutinjectie uit. Activeer of behoud geen publieke Worker
+wanneer een echte pending of ongeldige intent resteert.
 
 Test de outbox afzonderlijk met een installable time-driven trigger van exact
 één minuut. Eén trigger is genoeg; dubbele triggers vergroten het risico op
@@ -668,10 +654,9 @@ Google-eigenaaraccount ruim vóór en uiterlijk op de deadline uit:
    uitvoerder, `LAST_RSVP_SHEET_CLEAR_AT`, tijdstip van permanente verwijdering
    en de geslaagde ontoegankelijkheidscontrole. Vink de kalenderherinnering af.
 
-De productie-Sheet-clear is in code geblokkeerd tot de dag na de bruiloft. In
-de testomgeving mag zij eerder worden uitgevoerd. Oefen clear én het definitief
-verwijderen van een uitsluitend fictieve test-Sheet; zet die test-Sheet daarna
-niet opnieuw als productiebron in.
+De productie-Sheet-clear is in code geblokkeerd tot de dag na de bruiloft. De
+lokale mocktests controleren deze blokkade; voer geen vroege clear uit op een
+externe Sheet.
 
 ## Verplichte testmatrix
 
@@ -727,11 +712,11 @@ niet opnieuw als productiebron in.
     `manual_review` na 24 uur. Bewijs dat een exacte submitretry nooit een
     tweede mail maakt, dat een mailfout de duurzame RSVP niet terugdraait en dat
     mail/logs geen code, token, keuzes of bericht bevatten.
-15. Test de Sheet-clear-preview, verkeerde confirmation (geen wijziging),
-    juiste testconfirmation (alle datarijen weg, headers behouden,
-    `permanentDeletionCompleted=false`) en de productie-datumblokkade. Oefen
-    daarnaast handmatig de volledige file-delete plus permanent verwijderen
-    uit Prullenbak met een fictieve test-Sheet.
+15. Test lokaal de Sheet-clear-preview, verkeerde confirmation (geen
+    wijziging), juiste confirmation (alle datarijen weg, headers behouden,
+    `permanentDeletionCompleted=false`) en de productie-datumblokkade. Voer
+    vóór de retentiedeadline de echte file-delete uitsluitend uit volgens het
+    beoordeelde productie-runbook.
 16. Test `migrateInvitationSchemaV1ToV2()` met een pending intent (geen enkele
     wijziging), een geldige legacyrij (alle waarden behouden plus
     `day`/`TRUE`) en een tweede aanroep (`migrated: false`).

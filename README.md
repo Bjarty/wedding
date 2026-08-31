@@ -1,9 +1,8 @@
 # Lisette & Bjarty
 
 De broncode voor `lisetteenbjarty.nl`. De statische React-site wordt vanaf
-`main` met GitHub Pages gepubliceerd. De RSVP-integratie is standaard
-uitgeschakeld en wordt pas zichtbaar wanneer de publieke frontendconfiguratie
-voor de geteste API is ingevuld.
+`main` met GitHub Pages gepubliceerd. De live RSVP-keten gebruikt de
+productie-Worker, Apps Script-writer en private productie-Sheet.
 
 ## Lokaal werken
 
@@ -36,12 +35,13 @@ naar `https://lisetteenbjarty.nl/#rsvp`. Via **Test RSVP** opent een lokale
 Familie Garcia-demonstratie. De zichtbare voorbeeldcode werkt alleen wanneer
 Vite in ontwikkelmodus draait; reacties blijven in tabgeheugen en raken geen
 Worker, Apps Script of Google Sheet. De code is synthetisch en mag nooit in een
-test- of productieomgeving worden geprovisioned.
+externe omgeving worden geprovisioned.
 
 ## RSVP-configuratie
 
-Kopieer `.env.example` naar `.env.local` en vul uitsluitend de publieke
-waarden in wanneer de testomgeving gereed is:
+Kopieer `.env.example` alleen voor lokaal ontwikkelen naar `.env.local`.
+Gebruik geen verwijderde test-Worker of test-Sheet; laat de waarden fail-closed
+of vul bewust de openbare productieconfiguratie in:
 
 ```text
 VITE_RSVP_ENABLED=false
@@ -52,22 +52,23 @@ VITE_TURNSTILE_SITE_KEY=...
 ```
 
 Zet `VITE_RSVP_ENABLED` en `VITE_RSVP_HOUSEHOLD_CODES_ENABLED` uitsluitend voor
-een goedgekeurde lokale test of productieactivering exact op `true`. Zonder de
+een bewuste lokale productiecontrole exact op `true`. Zonder de
 eerste vlag én beide endpointwaarden blijft “RSVP opent binnenkort” staan;
 zonder de tweede vlag verschijnt geen invoer voor huishoudcodes.
-`VITE_RSVP_CONFIRMATION_EMAIL_ENABLED=true` mag pas na een geslaagde
-end-to-end mailtest worden gezet. Deze openbare vlag past alleen de tekst bij
-het optionele e-mailadres aan; de Apps Script-writer blijft standaard
-fail-closed met `CONFIRMATION_EMAIL_ENABLED=false`.
+De openbare bevestigingsmailvlag past alleen de tekst bij het optionele
+e-mailadres aan; zij activeert geen backendmail.
 Een Turnstile-sitekey en API-URL zijn openbaar; writer-URL's, HMAC-sleutels,
 Turnstile-secrets en uitnodigingstoken-secrets horen nooit in een `VITE_`
 variabele of in Git. De `RESEND_API_KEY` hoort uitsluitend in Apps Script
 Script Properties en nooit in Pages, Cloudflare, de Sheet of Git.
 
-Voor Pages leest de build deze vijf waarden als repositoryvariabelen onder
+Voor Pages leest de build vier waarden als repositoryvariabelen onder
 **Settings → Secrets and variables → Actions → Variables**. Ze komen bewust
-niet uit secrets of alleen uit de `github-pages`-environment. Stel ze pas in
-nadat de afzonderlijke testomgeving end-to-end is goedgekeurd.
+niet uit secrets of alleen uit de `github-pages`-environment:
+`VITE_RSVP_ENABLED`, `VITE_RSVP_HOUSEHOLD_CODES_ENABLED`,
+`VITE_RSVP_API_BASE_URL` en `VITE_TURNSTILE_SITE_KEY`. De beoordeelde
+Pages-workflow zet `VITE_RSVP_CONFIRMATION_EMAIL_ENABLED=true` expliciet omdat
+de productie-outbox en Resend-route end-to-end zijn gecontroleerd.
 
 De serveronderdelen en handmatige inrichtingsstappen staan in
 [`rsvp/worker`](rsvp/worker) en [`rsvp/apps-script`](rsvp/apps-script).
@@ -75,7 +76,7 @@ De werkwijze voor één gedeelde QR, persoonlijke codes en het beheren van
 huishoud- en gastgegevens staat in
 [`rsvp/INVITATION-DISTRIBUTION.md`](rsvp/INVITATION-DISTRIBUTION.md).
 De duurzame bevestigingsmail via Apps Script `EmailOutbox` en Resend, inclusief
-DNS-behoud, privacyvoorwaarden, testcutoff en rollback, staat in het
+DNS-behoud, privacyvoorwaarden, activeringscutoff en rollback, staat in het
 [Apps Script-runbook](rsvp/apps-script/README.md#veilige-resend-migratie-en-activering).
 
 ## Publiceren

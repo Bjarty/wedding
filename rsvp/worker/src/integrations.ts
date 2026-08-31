@@ -21,17 +21,10 @@ import { PublicHttpError } from './errors.js';
 import { isRecord } from './validation.js';
 
 const TURNSTILE_VERIFY_URL = 'https://challenges.cloudflare.com/turnstile/v0/siteverify';
-const TURNSTILE_DUMMY_ACTION = 'test';
-const TURNSTILE_DUMMY_TOKEN = 'XXXX.DUMMY.TOKEN.XXXX';
-const TURNSTILE_DUMMY_SECRET_SHA256 = new Set([
-  'fb8f35129df87662c650ada12fd614f1b58dce4a37fdd7589ba3a6b9a78c0aae',
-  '1e3e58656012d861e23deae64f177673d7b86a9c55fe1d5d10b94e3c9755d168',
-]);
 // A real Apps Script durable write can take 20–30 seconds, particularly while
 // Google follows the web-app redirect or waits for ScriptLock. Allow twice the
 // observed upper range; the browser timeout deliberately includes more margin.
 export const WRITER_TIMEOUT_MILLISECONDS = 60_000;
-const LOCAL_BROWSER_TEST_ORIGIN = 'http://localhost:3000';
 const OPAQUE_ID_PATTERN = /^[A-Za-z0-9_-]+$/;
 const IDEMPOTENCY_KEY_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const RECEIPT_NUMBER_PATTERN = /^RSVP-[A-Z0-9]{6,20}$/;
@@ -296,16 +289,12 @@ const parseSubmitResult = (
   };
 };
 
-export const assertEnvironment = async (
-  env: Env,
-  dependencies: RuntimeDependencies,
-): Promise<void> => {
+export const assertEnvironment = (env: Env): void => {
   try {
     const origin = new URL(env.ALLOWED_ORIGIN);
-    const isExactLocalBrowserTest = env.ALLOWED_ORIGIN === LOCAL_BROWSER_TEST_ORIGIN;
     if (
       origin.origin !== env.ALLOWED_ORIGIN ||
-      (origin.protocol !== 'https:' && !isExactLocalBrowserTest)
+      origin.protocol !== 'https:'
     ) throw new Error('invalid origin');
 
     const writerUrl = new URL(env.WRITER_URL);
@@ -341,28 +330,9 @@ export const assertEnvironment = async (
     typeof env.CLIENT_RATE_LIMITER?.limit !== 'function' ||
     typeof env.GLOBAL_RATE_LIMITER?.limit !== 'function' ||
     typeof env.RESOLVE_RATE_LIMITER?.limit !== 'function' ||
-    typeof env.SUBMIT_RATE_LIMITER?.limit !== 'function' ||
-    typeof dependencies.sha256Hex !== 'function'
+    typeof env.SUBMIT_RATE_LIMITER?.limit !== 'function'
   ) {
     throw new PublicHttpError(503, 'CONFIGURATION_ERROR');
-  }
-
-  const usesDummyAction = env.TURNSTILE_EXPECTED_ACTION !== undefined;
-  if (usesDummyAction) {
-    let secretFingerprint = '';
-    try {
-      secretFingerprint = await dependencies.sha256Hex(env.TURNSTILE_SECRET);
-    } catch {
-      throw new PublicHttpError(503, 'CONFIGURATION_ERROR');
-    }
-    if (
-      env.TURNSTILE_EXPECTED_ACTION !== TURNSTILE_DUMMY_ACTION ||
-      env.ALLOWED_ORIGIN !== LOCAL_BROWSER_TEST_ORIGIN ||
-      env.TURNSTILE_EXPECTED_HOSTNAME !== 'localhost' ||
-      !TURNSTILE_DUMMY_SECRET_SHA256.has(secretFingerprint)
-    ) {
-      throw new PublicHttpError(503, 'CONFIGURATION_ERROR');
-    }
   }
 };
 
@@ -481,23 +451,12 @@ export const verifyTurnstile = async (
     throw new PublicHttpError(503, 'UPSTREAM_UNAVAILABLE');
   }
 
-  const expectedConfiguredAction = env.TURNSTILE_EXPECTED_ACTION ?? expectedAction;
-  const isConfiguredResponse =
-    isRecord(result) &&
-    result.success === true &&
-    result.hostname === env.TURNSTILE_EXPECTED_HOSTNAME &&
-    result.action === expectedConfiguredAction;
-  const isOfficialLiteralTestResponse =
-    env.TURNSTILE_EXPECTED_ACTION === TURNSTILE_DUMMY_ACTION &&
-    token === TURNSTILE_DUMMY_TOKEN &&
-    isRecord(result) &&
-    result.success === true &&
-    result.hostname === 'example.com' &&
-    result.action === undefined &&
-    isRecord(result.metadata) &&
-    result.metadata.result_with_testing_key === true;
-
-  if (!isConfiguredResponse && !isOfficialLiteralTestResponse) {
+  if (
+    !isRecord(result) ||
+    result.success !== true ||
+    result.hostname !== env.TURNSTILE_EXPECTED_HOSTNAME ||
+    result.action !== expectedAction
+  ) {
     throw new PublicHttpError(403, 'CHALLENGE_FAILED');
   }
 };

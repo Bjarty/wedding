@@ -232,7 +232,7 @@ class MockSpreadsheet {
 }
 
 const properties = new Map([
-  ['ENVIRONMENT', 'test'],
+  ['ENVIRONMENT', 'production'],
   ['SPREADSHEET_ID', 'sheet-test-123'],
   ['SHEET_OWNER_EMAIL', 'sheet-owner@example.test'],
   ['WRITER_HMAC_SECRET', 'writer-secret-that-is-longer-than-thirty-two-characters'],
@@ -1040,14 +1040,12 @@ const retentionBoundaryIntent = JSON.parse(
 );
 const beforeRetentionBoundaryRevision = invitationRevision();
 const preBoundaryTestNow = testNowMilliseconds;
-properties.set('ENVIRONMENT', 'production');
 testNowMilliseconds = Date.parse('2027-07-31T22:00:00.000Z');
 resetFaults();
 assert.equal(post(makeEnvelope('submit', retentionBoundaryData)).error.code, 'RSVP_CLOSED');
 assert.equal(invitationRevision(), beforeRetentionBoundaryRevision);
 assert.throws(() => run('recoverAllPendingIntents()'), /RSVP_CLOSED/);
 assert.equal(invitationRevision(), beforeRetentionBoundaryRevision);
-properties.set('ENVIRONMENT', 'test');
 testNowMilliseconds = preBoundaryTestNow;
 expectSingleDurableResult(retentionBoundaryData, retentionBoundaryIntent.result);
 durableRevision += 1;
@@ -1544,12 +1542,21 @@ context.__literal = 'gewone tekst';
 assert.equal(run('escapeForSheet_(__literal)'), 'gewone tekst');
 
 const preview = hostValue(run('previewRsvpSheetClear()'));
-assert.equal(preview.environment, 'test');
-assert.equal(preview.eligibleNow, true);
+assert.equal(preview.environment, 'production');
+assert.equal(preview.eligibleNow, false);
 assert.equal(preview.permanentDeleteBy, '2027-08-01T00:00:00+02:00');
 const rowsBeforeRejectedClear = Object.fromEntries(
   [...spreadsheet.sheets.entries()].map(([name, sheet]) => [name, sheet.getLastRow()]),
 );
+properties.set('RSVP_SHEET_CLEAR_CONFIRMATION', preview.confirmationValue);
+assert.throws(() => run('clearRsvpSheetDataWithConfirmation()'), /blocked until/);
+assert.deepEqual(
+  Object.fromEntries([...spreadsheet.sheets.entries()].map(([name, sheet]) => [name, sheet.getLastRow()])),
+  rowsBeforeRejectedClear,
+);
+properties.set('ENVIRONMENT', 'test');
+assert.throws(() => run('previewRsvpSheetClear()'), /ENVIRONMENT must be production/);
+properties.set('ENVIRONMENT', 'production');
 properties.set('CONFIRMATION_EMAIL_ENABLED', 'true');
 assert.throws(
   () => run('clearRsvpSheetDataWithConfirmation()'),
@@ -1579,25 +1586,23 @@ testNowMilliseconds += 61000;
 queueUrlFetchResponse(200, { id: randomUUID() });
 assert.equal(hostValue(run('processOneConfirmationEmail_(__clearRaceDeliveryId)')).status, 'sent');
 properties.set('CONFIRMATION_EMAIL_ENABLED', 'false');
+testNowMilliseconds = Date.parse('2027-05-22T22:00:00.000Z');
+const eligiblePreview = hostValue(run('previewRsvpSheetClear()'));
+assert.equal(eligiblePreview.environment, 'production');
+assert.equal(eligiblePreview.eligibleNow, true);
 properties.set('RSVP_SHEET_CLEAR_CONFIRMATION', 'WRONG');
 assert.throws(() => run('clearRsvpSheetDataWithConfirmation()'), /does not match/);
 assert.deepEqual(
   Object.fromEntries([...spreadsheet.sheets.entries()].map(([name, sheet]) => [name, sheet.getLastRow()])),
   rowsBeforeRejectedClear,
 );
-properties.set('RSVP_SHEET_CLEAR_CONFIRMATION', preview.confirmationValue);
+properties.set('RSVP_SHEET_CLEAR_CONFIRMATION', eligiblePreview.confirmationValue);
 const sheetClear = hostValue(run('clearRsvpSheetDataWithConfirmation()'));
 assert.equal(sheetClear.headersPreserved, true);
 assert.equal(sheetClear.permanentDeletionCompleted, false);
 for (const sheet of spreadsheet.sheets.values()) assert.equal(sheet.getLastRow(), 1);
 assert.equal(properties.has('RSVP_SHEET_CLEAR_CONFIRMATION'), false);
 assert.equal(typeof properties.get('LAST_RSVP_SHEET_CLEAR_AT'), 'string');
-
-properties.set('ENVIRONMENT', 'production');
-const productionPreview = hostValue(run('previewRsvpSheetClear()'));
-assert.equal(productionPreview.eligibleNow, false);
-properties.set('RSVP_SHEET_CLEAR_CONFIRMATION', productionPreview.confirmationValue);
-assert.throws(() => run('clearRsvpSheetDataWithConfirmation()'), /blocked until/);
 
 const manifest = JSON.parse(readFileSync(fileURLToPath(new URL('./appsscript.json', import.meta.url)), 'utf8'));
 assert.equal(manifest.oauthScopes.some((scope) => /gmail|mail\.google/u.test(scope)), false);

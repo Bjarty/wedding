@@ -34,7 +34,7 @@ naar de writer.
 - Een privacyarm ontvangstbericht met hetzelfde stabiele ontvangstnummer.
 - Verwijdering van RSVP-detailgegevens uiterlijk 1 augustus 2027.
 
-De automatische mail staat standaard uit. De Apps Script-writer zet een
+De automatische mail is in productie actief. De Apps Script-writer zet een
 bevestiging pas na een duurzame RSVP-write in een eigen `EmailOutbox` en
 verstuurt haar via Resend HTTPS met afzender en antwoordadres
 `rsvp@lisetteenbjarty.nl`. De Cloudflare Worker en het publieke
@@ -45,49 +45,36 @@ te bekijken of wijzigen; daarvoor blijft dezelfde persoonlijke huishoudcode
 nodig.
 
 De concrete generatie-, Sheet- en distributiewerkwijze staat in
-[`INVITATION-DISTRIBUTION.md`](./INVITATION-DISTRIBUTION.md). De code in Git
-activeert niets vanzelf; zowel backend als Pages blijven achter afzonderlijke
-featureflags staan.
+[`INVITATION-DISTRIBUTION.md`](./INVITATION-DISTRIBUTION.md). De backend blijft
+apart uitzetbaar. De Pages-workflow zet de bevestigingsmailtekst expliciet aan
+omdat de productie-outbox en Resend-route end-to-end zijn gecontroleerd.
 
-## Veilige activeringsvolgorde
+## Production-only beheer
 
-1. Beoordeel en merge alleen de lokale foundation en de tests.
-2. Maak onder het vooraf afgesproken Google-eigenaaraccount een aparte private test-Sheet en
-   een aparte Apps Script-testdeployment volgens
-   [`apps-script/README.md`](apps-script/README.md).
-3. Maak een Cloudflare-test-Worker en Turnstile-widget volgens
-   [`worker/README.md`](worker/README.md). Maak daarbij expliciet een
-   test-only `workers.dev`-preview-URL of reviewed testroute: de ingecheckte
-   configuratie staat bewust op `workers_dev = false` en is dus niet direct
-   bereikbaar. Gebruik eigen rate-limit namespace-ID's en andere secrets dan
-   in productie.
-4. Test fictieve dag- én avondhuishoudens volledig via de gedeelde QR en een
-   echte, uitsluitend voor test gegenereerde code: eerste reactie, opnieuw
-   openen met dezelfde code, wijziging, alle maaltijdregels, afmelding,
-   optionele velden, retry, conflict, ingetrokken en ongeldige code. Doe de
-   browsertest lokaal vanaf exact `http://localhost:3000` met Cloudflares
-   officiële testkeys en uitsluitend de aparte test-Worker, testwriter en
-   test-Sheet; wijzig hiervoor geen live Pages-variabelen.
-5. Richt voor uitsluitend de testomgeving een afzonderlijke Resend-inrichting
-   in volgens het
-   [Apps Script-runbook](./apps-script/README.md#veilige-resend-migratie-en-activering),
-   laat tracking uit en test de duurzame outbox met fictieve adressen.
-6. Controleer handmatig dat Sheet, outbox en logs geen ruwe tokens, secrets of
-   onnodige persoonsgegevens bevatten.
-7. Maak daarna pas afzonderlijke productie-Sheet, Apps Script-deployment,
-   Worker, Turnstile-widget, rate-limit namespaces en secrets. Provision de
-   echte huishoudens uitsluitend in die private productie-Sheet.
-8. Zet pas na een geslaagde productiecontrole de openbare
-   repositoryvariabelen onder **GitHub → Settings → Secrets and variables →
-   Actions → Variables**: `VITE_RSVP_ENABLED=true`,
-   `VITE_RSVP_HOUSEHOLD_CODES_ENABLED=true`, `VITE_RSVP_API_BASE_URL` en
-   `VITE_TURNSTILE_SITE_KEY`. Zet
-   `VITE_RSVP_CONFIRMATION_EMAIL_ENABLED=true` pas nadat de writerflag, het
-   activeringstijdstip en de echte mailroute end-to-end zijn gecontroleerd. De
-   build-job leest geen variabelen die alleen in de `github-pages`-environment
-   staan.
-9. Bouw en beoordeel de productie-artifact voordat de configuratiewijziging
-   naar `main` gaat.
+Er is geen externe RSVP-testomgeving meer. Gewone unit-, contract- en
+securitytests draaien lokaal met mocks en raken Cloudflare, Apps Script,
+Google Sheets of Resend niet. Nieuwe end-to-end controles gebruiken uitsluitend
+een herkenbaar synthetisch smokehuishouden in productie, na een private backup
+en vóór het provisionen van echte huishoudens.
+
+1. Voer lokaal `npm ci`, `npm run check` en `npm run build` uit en controleer
+   `dist/CNAME`.
+2. Controleer productie-eigenaar, Sheet-ID, Apps Script-deployment, Worker,
+   Turnstile-hostname, sluitingsdatum en de vijf server-side secrets zonder
+   waarden te loggen of te kopiëren.
+3. Provision één synthetisch daghuishouden, controleer resolve, eerste submit,
+   wijziging, revision, stabiel ontvangstnummer, Sheetrijen en precies één
+   afgeleverde bevestigingsmail. Trek de code daarna in en verwijder de
+   synthetische persoonsgegevens volgens het runbook.
+4. Controleer dat Sheet, outbox, browser en logs geen leesbare huishoudcode,
+   uitnodigingstoken of secret bevatten.
+5. Beheer de vier openbare productievariabelen onder **GitHub → Settings →
+   Secrets and variables → Actions → Variables**:
+   `VITE_RSVP_ENABLED=true`, `VITE_RSVP_HOUSEHOLD_CODES_ENABLED=true`,
+   `VITE_RSVP_API_BASE_URL` en `VITE_TURNSTILE_SITE_KEY`. De beoordeelde
+   Pages-workflow zet de bevestigingsmailtekst expliciet aan.
+6. Bouw en beoordeel de productie-artifact voordat een wijziging naar `main`
+   gaat.
 
 Zonder `VITE_RSVP_ENABLED=true` én beide endpointwaarden blijft “RSVP opent
 binnenkort” zichtbaar. Zonder `VITE_RSVP_HOUSEHOLD_CODES_ENABLED=true` blijft

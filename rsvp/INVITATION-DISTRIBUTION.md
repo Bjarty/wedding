@@ -166,21 +166,19 @@ pagina geen nieuwere reactie.
   uitgiftebestand.
 - Controleer vóór alle druk: één fictieve dagcode, één fictieve avondcode,
   meerdere telefoons, matig licht en handmatige invoer zonder camera.
-- Provision de zichtbare lokale Familie Garcia-demo-code nooit in test of
-  productie.
+- Provision de zichtbare lokale Familie Garcia-demo-code nooit extern.
 
-## Test- en productieactivering
+## Production-only activering
 
-Test eerst end-to-end met uitsluitend synthetische gegevens: resolve via de
-gedeelde QR, eerste submit, opnieuw openen met dezelfde code, een wijziging,
-dag- en avondbeleid, typefout, ingetrokken code, rate limiting, retry en
-revisionconflict. Controleer de juiste rijen in `Responses`, `GuestDetails`,
-`Idempotency`, `Audit` en `EmailOutbox` en bevestig dat nergens een leesbare
-code of secret staat. Test bij ingeschakelde mail ook een identieke retry binnen
-Resends 24-uurs-idempotencyvenster, een wijziging, providerfout en
-`manual_review`; iedere logische submit mag hooguit één mail opleveren.
+Er is geen externe testomgeving meer. Draai de lokale mock- en contracttests en
+gebruik daarna één herkenbaar synthetisch smokehuishouden in productie: resolve
+via de gedeelde QR, eerste submit, opnieuw openen met dezelfde code, een
+wijziging en de verwachte rijen in `Responses`, `GuestDetails`, `Idempotency`,
+`Audit` en `EmailOutbox`. Bevestig dat nergens een leesbare code of secret staat
+en dat iedere logische submit hooguit één mail oplevert. Trek de smokecredential
+daarna in en verwijder de synthetische persoonsgegevens gecontroleerd.
 
-Maak daarna afzonderlijke productieresources; hergebruik niets uit test:
+De productieketen bestaat uit:
 
 1. nieuwe private productie-Sheet en nieuw Apps Script-project/deployment;
 2. nieuwe productie-Worker en Turnstile-widget;
@@ -195,26 +193,26 @@ Maak daarna afzonderlijke productieresources; hergebruik niets uit test:
    [productierunbook](./worker/README.md#fail-closed-productieactivering). Gebruik
    aanvankelijk bij voorkeur het productie-`workers.dev`-endpoint zodat TransIP-
    DNS en mailrecords niet wijzigen;
-8. afzonderlijke Resend-test en -productie-inrichting volgens de
+8. één productie-Resend-inrichting volgens de
    [veilige mailmigratie](./apps-script/README.md#veilige-resend-migratie-en-activering),
    met EU-verzendroute (niet verwarren met dataresidentie), tracking uit,
    DPA/SCC-, VS-verwerking- en retentiebeoordeling, beperkte API-key,
    uitsluitend de exacte DNS-records uit het Resend-dashboard en behoud van
    alle bestaande GitHub Pages- en TransIP-mailrecords;
-9. backendmail pas vanaf een expliciete cutoff met
-   `CONFIRMATION_EMAIL_ENABLED=true`, en daarna pas de openbare Pages-vlag
-   `VITE_RSVP_CONFIRMATION_EMAIL_ENABLED=true`;
+9. backendmail vanaf een expliciete cutoff met
+   `CONFIRMATION_EMAIL_ENABLED=true`; de beoordeelde Pages-workflow zet
+   `VITE_RSVP_CONFIRMATION_EMAIL_ENABLED=true` expliciet;
 10. GitHub Actions-repositoryvariabelen
    `VITE_RSVP_ENABLED=true`,
    `VITE_RSVP_HOUSEHOLD_CODES_ENABLED=true`,
    `VITE_RSVP_API_BASE_URL` en `VITE_TURNSTILE_SITE_KEY`;
-11. een beoordeelde Pages-build en een laatste productie-smoketest.
+11. een beoordeelde Pages-build en de bovengenoemde productie-smokecheck vóór
+    echte uitnodigingsdata.
 
 De Worker- en frontendvlag zijn twee aparte veiligheidsgrenzen. Alleen de
 frontend verbergen stopt een bestaande client niet; gebruik voor een echte
 stop het backend-stoprunbook in
 [`apps-script/README.md`](./apps-script/README.md#backend-stop-en-rollback).
 
-Voer geen productieactivatie uit vanuit deze documentatiewijziging. Laat eerst
-de code-diff, testresultaten, Sheet-migratie en exacte externe stappen
-beoordelen.
+Laat iedere wijziging aan productie voorafgaan door een code-diff,
+testresultaten, backup en exact beoordeelde externe stappen.

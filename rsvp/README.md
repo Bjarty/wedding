@@ -9,6 +9,9 @@ gedeelde QR -> #rsvp -> persoonlijke code (alleen in browsergeheugen)
 legacy fragmentlink -----------------------------|
                                                   v
 GitHub Pages -> Cloudflare Worker -> gesigneerde Apps Script-writer -> private Google Sheet
+                                                              |
+                                                              v
+                                                   duurzame EmailOutbox -> Resend
 ```
 
 De browser spreekt nooit rechtstreeks met Google Apps Script. Een leesbare
@@ -17,23 +20,29 @@ browseropslag of Google Sheet. De Worker valideert Turnstile, invoer,
 rate-limits, herhaalde verzendingen en revisies en stuurt alleen een keyed hash
 naar de writer.
 
-## Versie 1
+## Functies
 
 - Eén gedeelde QR naar `https://lisetteenbjarty.nl/#rsvp`, plus een unieke
   persoonlijke code per huishouden met vooraf ingestelde namen.
 - Aanwezigheid per persoon.
 - Voor iedere aanwezige daggast één keuze: vis, vlees, vega of vegan;
   avondgasten krijgen geen maaltijdvraag.
-- Optioneel e-mailadres voor praktische informatie over de bruiloft.
+- Optioneel e-mailadres voor praktische informatie en, na afzonderlijke
+  activering, een automatisch ontvangstbericht.
 - Optioneel bericht en bewust geen telefoonnummer.
 - Een stabiel ontvangstnummer na bevestigde opslag.
-- Geen bevestigingsmail in deze versie.
+- Een privacyarm ontvangstbericht met hetzelfde stabiele ontvangstnummer.
 - Verwijdering van RSVP-detailgegevens uiterlijk 1 augustus 2027.
 
-Versie 2 kan een bevestiging versturen vanaf
-`rsvp@lisetteenbjarty.nl`. Activeer dit pas nadat dit adres in het verzendende
-Google-account als geverifieerd afzenderadres is ingesteld en een end-to-end
-test SPF, DKIM, DMARC, antwoordadres en bezorging heeft gecontroleerd.
+De automatische mail staat standaard uit. De Apps Script-writer zet een
+bevestiging pas na een duurzame RSVP-write in een eigen `EmailOutbox` en
+verstuurt haar via Resend HTTPS met afzender en antwoordadres
+`rsvp@lisetteenbjarty.nl`. De Cloudflare Worker en het publieke
+submitcontract blijven daarbij ongewijzigd. De mail bevat geen persoonlijke
+huishoudcode, ruwe uitnodigingstoken of volledige RSVP-keuzes. Het
+ontvangstnummer is alleen een referentie en nooit een credential om een reactie
+te bekijken of wijzigen; daarvoor blijft dezelfde persoonlijke huishoudcode
+nodig.
 
 De concrete generatie-, Sheet- en distributiewerkwijze staat in
 [`INVITATION-DISTRIBUTION.md`](./INVITATION-DISTRIBUTION.md). De code in Git
@@ -59,18 +68,25 @@ featureflags staan.
    browsertest lokaal vanaf exact `http://localhost:3000` met Cloudflares
    officiële testkeys en uitsluitend de aparte test-Worker, testwriter en
    test-Sheet; wijzig hiervoor geen live Pages-variabelen.
-5. Controleer handmatig dat Sheet en logs geen ruwe tokens, secrets of
+5. Richt voor uitsluitend de testomgeving een afzonderlijke Resend-inrichting
+   in volgens het
+   [Apps Script-runbook](./apps-script/README.md#veilige-resend-migratie-en-activering),
+   laat tracking uit en test de duurzame outbox met fictieve adressen.
+6. Controleer handmatig dat Sheet, outbox en logs geen ruwe tokens, secrets of
    onnodige persoonsgegevens bevatten.
-6. Maak daarna pas afzonderlijke productie-Sheet, Apps Script-deployment,
+7. Maak daarna pas afzonderlijke productie-Sheet, Apps Script-deployment,
    Worker, Turnstile-widget, rate-limit namespaces en secrets. Provision de
    echte huishoudens uitsluitend in die private productie-Sheet.
-7. Zet pas na een geslaagde productiecontrole de vier openbare
+8. Zet pas na een geslaagde productiecontrole de openbare
    repositoryvariabelen onder **GitHub → Settings → Secrets and variables →
    Actions → Variables**: `VITE_RSVP_ENABLED=true`,
    `VITE_RSVP_HOUSEHOLD_CODES_ENABLED=true`, `VITE_RSVP_API_BASE_URL` en
-   `VITE_TURNSTILE_SITE_KEY`. De build-job leest geen variabelen die alleen in
-   de `github-pages`-environment staan.
-8. Bouw en beoordeel de productie-artifact voordat de configuratiewijziging
+   `VITE_TURNSTILE_SITE_KEY`. Zet
+   `VITE_RSVP_CONFIRMATION_EMAIL_ENABLED=true` pas nadat de writerflag, het
+   activeringstijdstip en de echte mailroute end-to-end zijn gecontroleerd. De
+   build-job leest geen variabelen die alleen in de `github-pages`-environment
+   staan.
+9. Bouw en beoordeel de productie-artifact voordat de configuratiewijziging
    naar `main` gaat.
 
 Zonder `VITE_RSVP_ENABLED=true` én beide endpointwaarden blijft “RSVP opent
@@ -85,7 +101,10 @@ Zet pas vervolgens de enabled-vlag op `false` en bouw Pages opnieuw. Deze
 stappen verwijderen opgeslagen Sheetgegevens niet; daarvoor geldt de aparte
 definitieve retentieprocedure in hetzelfde runbook.
 
-Voor versie 1 hoeft de bestaande TransIP-DNS voor de website en mail niet te
-worden aangepast. Beslis pas later of de API een eigen Cloudflare-domein krijgt;
-een test- of productie-Worker-URL kan eerst zonder nameservermigratie worden
+Voor de RSVP-API hoeft de bestaande TransIP-DNS niet te worden aangepast. Voor
+Resend worden uitsluitend de actuele, domeinspecifieke verificatie- en
+verzendrecords uit het Resend-dashboard toegevoegd. Vervang daarbij nooit de
+bestaande rootrecords voor website of inkomende mail: A, `www`-CNAME, MX, SPF,
+TransIP-DKIM en DMARC blijven staan. Beslis apart of de API ooit een eigen
+Cloudflare-domein krijgt; een Worker-URL kan zonder nameservermigratie worden
 gebruikt.

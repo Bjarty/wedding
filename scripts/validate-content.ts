@@ -262,6 +262,70 @@ if (siteContent.event.rsvpDeadline.iso >= siteContent.event.date.iso) {
   errors.push('event.rsvpDeadline.iso must be before event.date.iso');
 }
 
+const rsvpDeadlinePhrase = `tot en met ${siteContent.event.rsvpDeadline.display}`;
+const accessRoutePhrase = 'huishoudcode of persoonlijke uitnodigingslink';
+const confirmationCopy = siteContent.rsvp;
+
+if (confirmationCopy.states.receiptLabel !== 'Bevestigingsnummer') {
+  errors.push('rsvp.states.receiptLabel must use "Bevestigingsnummer"');
+}
+for (const [path, value] of [
+  ['rsvp.form.emailConfirmationEnabledNote', confirmationCopy.form.emailConfirmationEnabledNote],
+  ['rsvp.form.emailConfirmationDisabledNote', confirmationCopy.form.emailConfirmationDisabledNote],
+  ['rsvp.states.receiptAccessHelper', confirmationCopy.states.receiptAccessHelper],
+] as const) {
+  if (!value.includes(accessRoutePhrase) || !value.includes(rsvpDeadlinePhrase)) {
+    errors.push(`${path} must name the code/link access route and exact RSVP deadline`);
+  }
+}
+if (!confirmationCopy.form.emailConfirmationEnabledNote.includes('bevestigingsnummer ook automatisch naar dit adres')) {
+  errors.push('rsvp.form.emailConfirmationEnabledNote must explain automatic confirmation-number delivery');
+}
+if (!confirmationCopy.states.receiptEmailEnabledHelper.includes('ditzelfde bevestigingsnummer ook naar het hierboven ingevulde e-mailadres')) {
+  errors.push('rsvp.states.receiptEmailEnabledHelper must confirm delivery to the email entered above');
+}
+if (!confirmationCopy.form.emailConfirmationDisabledNote.includes('nog geen automatische bevestigingsmail')) {
+  errors.push('rsvp.form.emailConfirmationDisabledNote must remain truthful while email is disabled');
+}
+if (!confirmationCopy.states.receiptEmailEmptyHelper.includes('geen bevestigingsmail')) {
+  errors.push('rsvp.states.receiptEmailEmptyHelper must explain that an empty email receives no mail');
+}
+if (!confirmationCopy.states.demoReceiptHelper.includes('geen e-mail verstuurd')) {
+  errors.push('rsvp.states.demoReceiptHelper must never promise an email');
+}
+if (
+  !confirmationCopy.form.privacyMessage.includes('uit je RSVP alleen je e-mailadres en bevestigingsnummer') ||
+  !confirmationCopy.form.privacyMessage.includes('Aanwezigheid, maaltijdkeuzes en je vrije bericht worden niet meegestuurd') ||
+  !confirmationCopy.form.privacyMessage.includes('verzendmetadata, het onderwerp en de inhoud')
+) {
+  errors.push('rsvp.form.privacyMessage must accurately scope RSVP fields and necessary mail metadata');
+}
+if (
+  !confirmationCopy.form.emailConfirmationDemoNote.includes('alleen tijdelijk in dit tabblad') ||
+  !confirmationCopy.form.emailConfirmationDemoNote.includes('geen e-mail verstuurd') ||
+  confirmationCopy.form.emailConfirmationDemoNote.includes(siteContent.event.rsvpDeadline.display) ||
+  confirmationCopy.form.emailConfirmationDemoNote.includes('persoonlijke uitnodigingslink')
+) {
+  errors.push('rsvp.form.emailConfirmationDemoNote must describe only local temporary demo behavior');
+}
+if (
+  !confirmationCopy.form.privacyEmailDisabledMessage.includes('nog geen automatische bevestigingsmail') ||
+  !confirmationCopy.form.privacyEmailDisabledMessage.includes('niet met een maildienst gedeeld') ||
+  confirmationCopy.form.privacyEmailDisabledMessage.includes('verzendmetadata')
+) {
+  errors.push('rsvp.form.privacyEmailDisabledMessage must describe the disabled mail path truthfully');
+}
+if (
+  !confirmationCopy.form.demoPrivacyMessage.includes('alleen tijdelijk in dit tabblad') ||
+  !confirmationCopy.form.demoPrivacyMessage.includes('niet naar Google Sheets of een maildienst') ||
+  !confirmationCopy.form.demoPrivacyMessage.includes('geen e-mail verstuurd')
+) {
+  errors.push('rsvp.form.demoPrivacyMessage must describe local-only storage and no external processing');
+}
+if (/bevestigingsnummer[^.]{0,80}(?:aanpassen|wijzigen)/iu.test(confirmationCopy.states.receiptAccessHelper)) {
+  errors.push('rsvp.states.receiptAccessHelper must not imply that the confirmation number grants access');
+}
+
 try {
   new Intl.DateTimeFormat('nl-NL', { timeZone: siteContent.event.timeZone });
 } catch {

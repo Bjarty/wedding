@@ -8,6 +8,9 @@ The trust path is:
 
 ```text
 GitHub Pages -> Cloudflare Worker -> signed Apps Script writer -> private Sheet
+                                                        |
+                                                        v
+                                             EmailOutbox -> Resend HTTPS
 ```
 
 The browser never calls Apps Script directly. The Worker never logs request
@@ -146,8 +149,19 @@ Success:
 }
 ```
 
-No confirmation email is sent in v1. The optional address is stored only for
-wedding information and can be returned to the same personal invitation link.
+Confirmation email is an Apps Script concern after a durable RSVP write. The
+Worker does not call Resend, hold its API key, add a mail endpoint, or change
+this success contract. When separately enabled, the writer deduplicates by the
+same logical idempotency key, queues a privacy-minimal message in its durable
+`EmailOutbox`, attempts delivery outside the RSVP Sheet lock, and lets its
+time-driven trigger continue retries and recovery. A mail/configuration failure
+does not roll back the already committed RSVP; an exact client retry remains
+idempotent.
+
+The email contains the stable receipt number but no invitation token, readable
+household code, attendance, meal choices, or free-text message. A receipt is a
+reference, not a credential: modifying an RSVP still requires the same personal
+household code.
 
 ## Error contract
 
@@ -233,6 +247,12 @@ Public, non-secret Worker variables:
 - `HOUSEHOLD_CODES_ENABLED=false` until the matching writer schema and data are
   reviewed; set exact `true` only for an approved environment
 - `TURNSTILE_EXPECTED_HOSTNAME=lisetteenbjarty.nl`
+
+There is deliberately no Resend or confirmation-email variable in the Worker.
+`CONFIRMATION_EMAIL_ENABLED`, `CONFIRMATION_EMAIL_ACTIVATED_AT` and
+`RESEND_API_KEY` belong only to Apps Script Script Properties. The separate
+public Pages variable `VITE_RSVP_CONFIRMATION_EMAIL_ENABLED` controls truthful
+UI copy and does not activate backend delivery.
 
 Cloudflare rate-limit bindings:
 
@@ -506,20 +526,27 @@ informatielek.
 
 ### 6. Activeer Pages en voer de smoke-test uit
 
-Stel pas nu de vier openbare GitHub Actions-repositoryvariabelen in:
+Stel pas nu de vijf openbare GitHub Actions-repositoryvariabelen in:
 
 ```text
 VITE_RSVP_ENABLED=true
 VITE_RSVP_HOUSEHOLD_CODES_ENABLED=true
+VITE_RSVP_CONFIRMATION_EMAIL_ENABLED=false
 VITE_RSVP_API_BASE_URL=<exact-beoordeelde-https-origin>
 VITE_TURNSTILE_SITE_KEY=<publieke-productie-sitekey>
 ```
+
+Laat de mailvlag `false` totdat de afzonderlijke
+[Resend-migratie](../apps-script/README.md#veilige-resend-migratie-en-activering)
+volledig is getest en backend-side actief is. Zet haar pas daarna exact op
+`true`; zij verandert uitsluitend de Pages-tekst en niets in deze Worker.
 
 Beoordeel de Pages-build en `dist/CNAME`, en test daarna via
 `https://lisetteenbjarty.nl/#rsvp` uitsluitend het synthetische
 smokehuishouden: resolve, eerste submit, opnieuw openen met dezelfde code,
 wijziging met revisionverhoging, gelijk ontvangstnummer en de verwachte rijen
-in `Responses`, `GuestDetails`, `Idempotency` en `Audit`. Controleer tevens een
+in `Responses`, `GuestDetails`, `Idempotency`, `Audit` en, wanneer mail
+afzonderlijk is geactiveerd, `EmailOutbox`. Controleer tevens een
 ongeldige code, avondbeleid, Turnstile-afwijzing en dat browser, Sheet en logs
 geen leesbare code of secret bevatten. Trek de synthetische productiecode na de
 smoke-test in voordat echte huishoudens worden geprovisioned.

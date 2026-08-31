@@ -226,13 +226,17 @@ export interface SiteContent {
       };
       emailLabel: string;
       emailHelper: string;
-      emailConfirmationNote: string;
+      emailConfirmationEnabledNote: string;
+      emailConfirmationDisabledNote: string;
+      emailConfirmationDemoNote: string;
       messageLabel: string;
       messageHelper: string;
       submitLabel: string;
       updateLabel: string;
       privacyHeading: string;
       privacyMessage: string;
+      privacyEmailDisabledMessage: string;
+      demoPrivacyMessage: string;
     };
     states: {
       loading: string;
@@ -248,7 +252,11 @@ export interface SiteContent {
       closed: string;
       success: string;
       receiptLabel: string;
-      receiptHelper: string;
+      receiptAccessHelper: string;
+      receiptEmailEnabledHelper: string;
+      receiptEmailEmptyHelper: string;
+      receiptEmailDisabledHelper: string;
+      demoReceiptHelper: string;
       retryLabel: string;
       loadLatestLabel: string;
     };

@@ -7,6 +7,7 @@ const configuredEnvironment = {
   VITE_RSVP_API_BASE_URL: 'https://rsvp-api.example.test/',
   VITE_TURNSTILE_SITE_KEY: 'test-site-key',
   VITE_RSVP_HOUSEHOLD_CODES_ENABLED: 'true',
+  VITE_RSVP_CONFIRMATION_EMAIL_ENABLED: 'true',
 } as const;
 
 test('activeert RSVP alleen met de expliciete true-vlag en beide publieke waarden', () => {
@@ -17,6 +18,7 @@ test('activeert RSVP alleen met de expliciete true-vlag en beide publieke waarde
     apiBaseUrl: 'https://rsvp-api.example.test',
     turnstileSiteKey: 'test-site-key',
     householdCodesEnabled: true,
+    confirmationEmailEnabled: true,
   });
 });
 
@@ -30,6 +32,7 @@ test('staat onversleuteld HTTP alleen toe voor lokale ontwikkeling', () => {
     apiBaseUrl: 'http://localhost:8787',
     turnstileSiteKey: 'test-site-key',
     householdCodesEnabled: true,
+    confirmationEmailEnabled: true,
   });
   assert.equal(parseRsvpConfig({ ...local, DEV: false }), null);
   assert.equal(
@@ -48,6 +51,36 @@ test('huishoudcodes staan alleen aan met de expliciete true-vlag', () => {
       apiBaseUrl: 'https://rsvp-api.example.test',
       turnstileSiteKey: 'test-site-key',
       householdCodesEnabled: false,
+      confirmationEmailEnabled: true,
     },
+  );
+});
+
+test('bevestigingsmail staat alleen aan met de expliciete true-vlag', () => {
+  assert.equal(
+    parseRsvpConfig({
+      ...configuredEnvironment,
+      VITE_RSVP_CONFIRMATION_EMAIL_ENABLED: undefined,
+    })?.confirmationEmailEnabled,
+    false,
+  );
+  assert.deepEqual(
+    parseRsvpConfig({
+      ...configuredEnvironment,
+      VITE_RSVP_CONFIRMATION_EMAIL_ENABLED: 'false',
+    }),
+    {
+      apiBaseUrl: 'https://rsvp-api.example.test',
+      turnstileSiteKey: 'test-site-key',
+      householdCodesEnabled: true,
+      confirmationEmailEnabled: false,
+    },
+  );
+  assert.equal(
+    parseRsvpConfig({
+      ...configuredEnvironment,
+      VITE_RSVP_CONFIRMATION_EMAIL_ENABLED: 'TRUE',
+    })?.confirmationEmailEnabled,
+    false,
   );
 });

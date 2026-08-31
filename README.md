@@ -46,6 +46,7 @@ waarden in wanneer de testomgeving gereed is:
 ```text
 VITE_RSVP_ENABLED=false
 VITE_RSVP_HOUSEHOLD_CODES_ENABLED=false
+VITE_RSVP_CONFIRMATION_EMAIL_ENABLED=false
 VITE_RSVP_API_BASE_URL=https://...
 VITE_TURNSTILE_SITE_KEY=...
 ```
@@ -54,11 +55,16 @@ Zet `VITE_RSVP_ENABLED` en `VITE_RSVP_HOUSEHOLD_CODES_ENABLED` uitsluitend voor
 een goedgekeurde lokale test of productieactivering exact op `true`. Zonder de
 eerste vlag én beide endpointwaarden blijft “RSVP opent binnenkort” staan;
 zonder de tweede vlag verschijnt geen invoer voor huishoudcodes.
+`VITE_RSVP_CONFIRMATION_EMAIL_ENABLED=true` mag pas na een geslaagde
+end-to-end mailtest worden gezet. Deze openbare vlag past alleen de tekst bij
+het optionele e-mailadres aan; de Apps Script-writer blijft standaard
+fail-closed met `CONFIRMATION_EMAIL_ENABLED=false`.
 Een Turnstile-sitekey en API-URL zijn openbaar; writer-URL's, HMAC-sleutels,
 Turnstile-secrets en uitnodigingstoken-secrets horen nooit in een `VITE_`
-variabele of in Git.
+variabele of in Git. De `RESEND_API_KEY` hoort uitsluitend in Apps Script
+Script Properties en nooit in Pages, Cloudflare, de Sheet of Git.
 
-Voor Pages leest de build deze vier waarden als repositoryvariabelen onder
+Voor Pages leest de build deze vijf waarden als repositoryvariabelen onder
 **Settings → Secrets and variables → Actions → Variables**. Ze komen bewust
 niet uit secrets of alleen uit de `github-pages`-environment. Stel ze pas in
 nadat de afzonderlijke testomgeving end-to-end is goedgekeurd.
@@ -68,6 +74,9 @@ De serveronderdelen en handmatige inrichtingsstappen staan in
 De werkwijze voor één gedeelde QR, persoonlijke codes en het beheren van
 huishoud- en gastgegevens staat in
 [`rsvp/INVITATION-DISTRIBUTION.md`](rsvp/INVITATION-DISTRIBUTION.md).
+De duurzame bevestigingsmail via Apps Script `EmailOutbox` en Resend, inclusief
+DNS-behoud, privacyvoorwaarden, testcutoff en rollback, staat in het
+[Apps Script-runbook](rsvp/apps-script/README.md#veilige-resend-migratie-en-activering).
 
 ## Publiceren
 

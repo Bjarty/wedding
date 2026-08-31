@@ -5,6 +5,9 @@ De browser roept deze web-app nooit rechtstreeks aan.
 
 ```text
 browser -> Cloudflare Worker -> gesigneerde Apps Script-web-app -> private Sheet
+                                                        |
+                                                        v
+                                             EmailOutbox -> Resend HTTPS
 ```
 
 De code maakt of wijzigt geen Google-account, Sheet, deployment of
@@ -21,12 +24,18 @@ toegangsinstelling. Test en productie worden bewust handmatig ingericht.
   gestuurd.
 - Vooraf ingestelde `guestId`-waarden en namen komen uit de private Sheet;
   submit accepteert nooit een naam vanuit de browser.
-- E-mail en bericht zijn optioneel. V1 verstuurt geen e-mail. De manifest
-  vraagt daarom ook geen Gmail- of Mail-scope.
+- E-mail en bericht zijn optioneel. Als de afzonderlijke mailfunctie actief is,
+  verstuurt de writer via Resend HTTPS een privacyarme bevestiging. Gmail- en
+  Mail-scopes zijn niet nodig; de manifest vraagt alleen de begrensde
+  `script.external_request`-scope voor deze uitgaande HTTPS-call.
 - Een nog niet afgeronde `Idempotency.intentJson` bevat de optionele e-mail en
   het bericht als hersteldata. Behandel de hele `Idempotency`-tab daarom als
   RSVP-detaildata/PII: niet exporteren, niet loggen en alleen toegankelijk
   maken voor dezelfde beperkte Sheet-beheerders.
+- `EmailOutbox` bevat tijdelijk het bestemmingsadres, ontvangstnummer en
+  technische afleverstatus. Behandel ook deze hele tab als RSVP-detaildata/PII.
+  De mail bevat geen naam, aanwezigheid, maaltijdkeuze, bericht, leesbare
+  huishoudcode of ruwe uitnodigingstoken. Providertracking blijft uit.
 - Er is geen telefoonveld en geen vrij tekstveld voor aanvullende
   dieetwensen; `mealChoice` is alleen voor aanwezige daggasten verplicht en
   blijft voor avondgasten leeg. Onbekende velden worden geweigerd.
@@ -52,6 +61,7 @@ stopt bij afwijkende bestaande headers.
 | `GuestDetails` | Vooraf ingestelde personen en actuele keuze | `householdId`, `guestId`, `displayName`, `attending`, `mealChoice`, `revision`, `updatedAt` |
 | `Idempotency` | Veilige retries, write-ahead intents en replaycontrole | `requestId`, `operation`, `idempotencyKey`, `payloadHash`, `householdId`, `baseRevision`, `targetRevision`, `status`, `intentJson`, `intentMac`, `responseJson`, `completionMac`, `requestTimestamp`, `createdAt`, `updatedAt`, `expiresAt` |
 | `Audit` | Minimale mutatiehistorie | `auditId`, `occurredAt`, `operation`, `outcome`, `householdId`, `responseId`, `revision`, `idempotencyKey`, `requestId` |
+| `EmailOutbox` | Duurzame, deduplicerende afleverstatus voor privacyarme ontvangstmail | `deliveryId`, `idempotencyKey`, `submitIntentMac`, `templateVersion`, `recipientEmail`, `receiptNumber`, `revision`, `createdAt`, `expiresAt`, `contentMac`, `status`, `attemptCount`, `firstAttemptAt`, `claimedAt`, `lastAttemptAt`, `nextAttemptAt`, `sentAt`, `providerMessageId`, `lastErrorCode`, `stateMac` |
 
 Provisioning vult per huishouden één `Invitations`-rij en één of meer
 `GuestDetails`-rijen. Gebruik URL-veilige, niet-voorspelbare IDs van maximaal
@@ -69,7 +79,8 @@ Provisioning vult per huishouden één `Invitations`-rij en één of meer
   ISO-8601-tijdstippen (bijvoorbeeld `2026-08-29T12:00:00.000Z`).
 - Iedere `GuestDetails`-rij heeft revision `0`; `attending`, `mealChoice` en
   `updatedAt` zijn leeg. `householdId` verwijst naar exact één Invitation.
-- `Responses`, `Idempotency` en `Audit` blijven vóór de eerste request leeg.
+- `Responses`, `Idempotency`, `Audit` en `EmailOutbox` blijven vóór de eerste
+  request leeg.
 
 Een lege of ongeldige Invitation-`updatedAt`, vooraf ingevulde gastkeuze of
 afwijkende basisrevision faalt gesloten voordat RSVP-data wordt gewijzigd.
@@ -99,7 +110,7 @@ Gebruik voor test en productie bij voorkeur een nieuwe private Sheet en voer
 `initSheet()` uit. De meegeleverde beheerfunctie
 `migrateInvitationSchemaV1ToV2()` is alleen bedoeld voor een Sheet met de
 exacte acht legacy `Invitations`-kolommen en de huidige exacte headers op de
-andere vier tabs. Zij:
+overige aanwezige RSVP-tabs. Zij:
 
 1. neemt de globale `ScriptLock`;
 2. controleert eigenaar, omgeving en alle headers;
@@ -112,7 +123,8 @@ andere vier tabs. Zij:
 
 De functie is idempotent: op een al geldig v2-schema retourneert zij
 `migrated: false` en verandert zij niets. Zij genereert geen codes en wijzigt
-geen Responses, GuestDetails, Idempotency of Audit. Voer haar nooit blind uit:
+geen Responses, GuestDetails, Idempotency, Audit of EmailOutbox. Voer haar
+nooit blind uit:
 
 1. zet nieuwe Worker-writes backend-side stil;
 2. maak een afgeschermde backup;
@@ -168,6 +180,66 @@ test na foutinjectie en in productie alleen na inspectie van de private Sheet;
 een fout betekent stoppen en onderzoeken, niet rijen handmatig op completed
 zetten.
 
+### Duurzame bevestigingsmail
+
+Een bevestigingsmail is een vervolgactie op een reeds duurzaam opgeslagen
+RSVP, nooit de commitpointer van die RSVP. Een mailfout draait de Response,
+GuestDetails, Audit, revision of het ontvangstnummer dus niet terug. De site
+toont het ontvangstnummer altijd direct; dat nummer is een referentie en geen
+credential. Alleen dezelfde persoonlijke huishoudcode geeft later toegang tot
+bekijken of wijzigen.
+
+Voor iedere succesvolle eerste submit of wijziging met e-mailadres maakt de
+writer hooguit één outboxitem voor die logische idempotency key. Een identieke
+submitretry gebruikt zolang de interne idempotencyrij wordt bewaard dezelfde
+opgeslagen uitkomst en maakt geen tweede outboxitem. Iedere Resend-call gebruikt
+daarnaast dezelfde provider-idempotencykey. Het 24-uursvenster begint pas bij
+de eerste duurzaam vastgelegde providerpoging (`firstAttemptAt`): een nog nooit
+geprobeerd `queued` item verloopt dus niet door ontbrekende providerconfiguratie.
+Automatische vervolgverzending blijft binnen dat venster; daarna gaat een
+onopgelost item naar `manual_review` in plaats van mogelijk dubbel te verzenden. De outbox
+blijft na de request duurzaam bestaan. De submit probeert het item na vrijgave
+van `ScriptLock`
+direct te verzenden; de éénminuuttrigger
+`processConfirmationEmailOutbox()` verwerkt retries en achtergebleven items.
+Het Workercontract en de Workerconfiguratie veranderen hierdoor niet.
+
+Bij een nieuwere RSVP-revisie zet de writer oudere nog niet verzonden
+`queued`/`retry`-mail voor hetzelfde huishouden op `manual_review` met reden
+`superseded`. Dit gebeurt ook als het adres wordt verwijderd. Een reeds actieve
+`sending`-claim blijft vanwege de mogelijke provider-race tijdens zijn lease
+ongemoeid. Als die claim na de lease verlaten blijkt, zet reconciliation hem
+alsnog op `manual_review/superseded` en wordt het oude adres niet opnieuw
+aangeboden; de nieuwere bevestiging is daarna de actuele mail.
+
+De verzendroutine reserveert een item duurzaam vóór de HTTPS-call en bewaart de
+afleverstatus daarna. Een bevestigde Resend-respons wordt `sent`. Netwerkfouten,
+HTTP 429 en 5xx worden binnen Resends idempotencyvenster met exact dezelfde
+payload en provider-idempotencykey begrensd opnieuw aangeboden; ook een
+onzekere netwerkuitslag kan daardoor niet dubbel verzenden. Een expliciet
+idempotencyconflict van de provider, een definitieve afwijzing of een na 24 uur
+nog onopgelost item gaat naar `manual_review` en wordt niet blind opnieuw
+verstuurd. Controleer zo'n item in het beperkte Resend-dashboard en de private
+Sheet zonder adres of andere gastdata naar een operationeel log te kopiëren.
+Zet de status nooit handmatig op `sent` of terug naar een automatisch
+verzendbare status zonder een afzonderlijk beoordeelde beheerprocedure.
+
+Ieder outboxitem bindt een onveranderlijke `templateVersion` in zijn content-
+MAC en provider-idempotencykey. Wijzig renderer `rsvp_confirmation_v1` nooit;
+voeg voor nieuwe mailcopy een nieuwe versie en aparte renderer toe. Stop vóór
+een deployment die mailpayloads raakt de trigger, laat verzendbare outboxitems
+uitlopen of beoordeel ze handmatig en hervat pas na controle. Zo kan een retry
+niet met dezelfde providerkey maar andere payload bij Resend aankomen.
+
+De mail wordt verstuurd als **Lisette & Bjarty** vanaf en met antwoordadres
+`rsvp@lisetteenbjarty.nl`. Zij noemt alleen dat de reactie is opgeslagen, het
+stabiele ontvangstnummer, de uiterste wijzigingsdatum en de publieke
+RSVP-pagina. Zij
+bevat geen persoonlijke code of token en ook geen volledige reactie. Schakel
+open-, click- en overige tracking in Resend uit. Gebruik providerlogs niet als
+gastadministratie en neem Resend en de bewaartermijnen op in de
+privacydocumentatie/verwerkersafspraken.
+
 ## Credential-hashes en secrets
 
 Maak uitnodigingstokens met minimaal 32 cryptografisch willekeurige bytes. De
@@ -201,11 +273,19 @@ Open in Apps Script **Projectinstellingen -> Script Properties**:
 | `WRITER_HMAC_SECRET` | ja | Willekeurig secret van minimaal 32 tekens; identiek aan de Worker-secret van uitsluitend deze omgeving |
 | `RSVP_CLOSE_AT` | ja | ISO-8601 tijdstip met offset, bijvoorbeeld `2027-04-11T00:00:00+02:00` als 10 april de laatste RSVP-dag is |
 | `MAX_CLOCK_SKEW_SECONDS` | nee | Standaard `300`; toegestaan `60` t/m `900` |
+| `CONFIRMATION_EMAIL_ENABLED` | nee | Standaard/fail-closed `false`; uitsluitend exact `true` activeert het aanmaken en verwerken van bevestigingsmail |
+| `CONFIRMATION_EMAIL_ACTIVATED_AT` | bij mailactivering | ISO-8601 tijdstip met offset; alleen submits die op of na deze beoordeelde cutoff worden opgeslagen mogen mail opleveren |
+| `RESEND_API_KEY` | bij mailactivering | Alleen in Script Properties: aparte sending-only, zo mogelijk domeinbeperkte sleutel voor exact deze omgeving; nooit in Sheet, Git, logs of `VITE_` |
 | `RSVP_SHEET_CLEAR_CONFIRMATION` | tijdelijk | Alleen vlak voor de expliciete defense-in-depth Sheet-clear; zie Retentie |
 
 Genereer een writer-secret bijvoorbeeld lokaal met
 `openssl rand -base64 48`. Zet secrets nooit in Git, Vite-variabelen,
 screenshots, tickets, logs of de Sheet.
+
+De ingecheckte manifest bevat `script.external_request` zodat Apps Script het
+Resend-HTTPS-endpoint mag aanroepen. Voeg geen Gmail-, Mail-, Drive- of bredere
+OAuth-scope toe. Bij een manifestwijziging moet een beheerder de nieuwe scope
+expliciet opnieuw beoordelen en autoriseren.
 
 ## Exact writercontract
 
@@ -358,6 +438,107 @@ Publieke codes zijn `INVITATION_INVALID`, `RSVP_CLOSED`,
 de Worker valideert de JSON-vorm en vertaalt codes naar veilige publieke
 HTTP-statussen en Nederlandse meldingen.
 
+## Veilige Resend-migratie en activering
+
+Deze repositorywijziging maakt geen Resend-account, DNS-record, trigger,
+deployment, Script Property of Pages-variabele aan. Voer eerst de volledige
+route uit in een strikt gescheiden testomgeving en laat diff, tests en
+migratiestappen beoordelen. Herhaal daarna gecontroleerd voor productie:
+
+1. Maak of selecteer een organisatie-eigendom Resend-account en kies de
+   beschikbare EU-verzendroute/regio. Die regio bepaalt de verzendroute en is
+   **geen garantie voor EU-dataresidentie**: accountgegevens, berichtinhoud en
+   providerlogs kunnen volgens de provider in de Verenigde Staten worden
+   verwerkt of bewaard. Leg eigenaarschap, hersteltoegang en minimale
+   beheerders vast; gebruik geen persoonlijk wegwerpaccount.
+2. Beoordeel en sluit de toepasselijke verwerkersovereenkomst/DPA en de
+   doorgiftegrondslag/SCC's. Documenteer Resend als verwerker, datacategorieën,
+   EU-route, feitelijke opslaglocaties, subverwerkers en bewaartermijnen.
+   Controleer vóór activering dat de actuele providerretentie (op het gratis
+   plan momenteel 30 dagen) de publieke verwijderbelofte uiterlijk 1 augustus
+   2027 niet kan overschrijden en leg ook het verwijderen van providerlogs en
+   exports in de retentiecheck vast. Activeer niet als die voorwaarde niet
+   aantoonbaar klopt. Zet open-, click- en overige tracking uit voordat een
+   echte ontvanger wordt gebruikt.
+3. Voeg in Resend alleen het bedoelde verzenddomein of een afzonderlijk
+   verzendsubdomein toe. Neem de DNS-records **letter voor letter en op dat
+   moment** over uit het Resend-dashboard; verzin geen host, type, prioriteit of
+   waarde uit dit document.
+4. Voeg die Resend-records in TransIP toe, maar vervang of verwijder geen
+   bestaand rootrecord. De vier GitHub Pages-A-records, het `www`-CNAME, de
+   inkomende TransIP-MX, het bestaande SPF-record, de TransIP-DKIM-records en
+   `_dmarc` blijven intact. Stop bij een SPF-conflict: er mag op één host niet
+   ongemerkt een tweede SPF-record ontstaan. Wijzig DNSSEC of nameservers niet.
+5. Wacht tot Resend alle vereiste records als geverifieerd toont en controleer
+   vanaf een onafhankelijke DNS-check dat website én inkomende TransIP-mail nog
+   werken. Stuur nog geen RSVP-mail.
+6. Maak per omgeving een nieuwe API-key met uitsluitend verzendrecht en, als
+   Resend dat aanbiedt, beperking tot het exacte verzenddomein. Zet de
+   productiekey alleen als `RESEND_API_KEY` in de productie-Script Properties;
+   toon of kopieer haar nooit naar Git, Sheet, Pages, Cloudflare, screenshots of
+   testconfiguratie.
+7. Stop tijdelijk nieuwe RSVP-writes, maak een afgeschermde Sheetbackup,
+   inspecteer en herstel eerst iedere pending `Idempotency`-intent. Kopieer de
+   beoordeelde nieuwe writercode en manifest. Voer vervolgens `initSheet()` één
+   keer handmatig uit: dit voegt de ontbrekende `EmailOutbox` plus exacte headers
+   toe zonder bestaande RSVP-rijen te verwijderen. Controleer headers,
+   rijenaantallen, revisions en ontvangstnummers vóór writes worden hervat.
+8. Autoriseer uitsluitend de in het manifest gevraagde scopes, waaronder
+   `script.external_request`, maak een nieuwe Apps Script-versie en werk de
+   bestaande web-appdeployment expliciet naar die versie bij. De Worker-URL,
+   Workerconfiguratie en het publieke contract blijven ongewijzigd.
+9. Laat `CONFIRMATION_EMAIL_ENABLED=false`. Zet een beoordeeld
+   `CONFIRMATION_EMAIL_ACTIVATED_AT` in de toekomst als volledig ISO-8601-
+   tijdstip met expliciete zone, bijvoorbeeld `2026-09-15T20:00:00+02:00`
+   (intern wordt dit naar UTC genormaliseerd), configureer de testkey en
+   maak één installable time-driven trigger die
+   `processConfirmationEmailOutbox()` iedere minuut uitvoert. Installeer geen
+   automatische trigger voor `recoverAllPendingIntents()`.
+10. Zet uitsluitend in de geïsoleerde testomgeving, pas op of na de gekozen
+    synthetische cutoff, tijdelijk `CONFIRMATION_EMAIL_ENABLED=true`. Test met
+    synthetische dag- en avondhuishoudens: zonder adres,
+    eerste submit met adres, wijziging, stabiel ontvangstnummer, identieke retry
+    binnen Resends 24-uurs-idempotencyvenster, providerafwijzing, tijdelijke
+    fout, een onzekere uitkomst met veilige retry en overgang naar
+    `manual_review` na een expliciet conflict of het 24-uursvenster. Controleer
+    één mail per logische submit, geen mail voor
+    pre-cutoff submits, privacyarme inhoud, uitgeschakelde tracking en dat RSVP
+    zelf bij een mailfout opgeslagen blijft. Zet daarna de testflag weer op
+    `false` en schakel de testtrigger uit voordat productie wordt voorbereid.
+11. Herhaal stappen 1–10 afzonderlijk voor productie. Kies daarna een toekomstig
+    productietijdstip, zet `CONFIRMATION_EMAIL_ACTIVATED_AT` exact op die cutoff
+    en pas pas op/na dat tijdstip `CONFIRMATION_EMAIL_ENABLED=true` toe. Controleer
+    de eerste synthetische productiemail en de outbox voordat echte adressen
+    worden gebruikt.
+12. Zet als laatste de openbare GitHub Actions-repositoryvariabele
+    `VITE_RSVP_CONFIRMATION_EMAIL_ENABLED=true` en publiceer een beoordeelde
+    Pages-build. Deze publieke vlag verandert alleen de websitetekst en is niet
+    technisch aan de backendflag gekoppeld; zij activeert geen backendmail.
+    Coördineer beide waarden handmatig en houd rekening met een tijdelijk
+    mismatchvenster tijdens deployment. Iedere andere publieke waarde houdt de
+    geen-mailbelofte zichtbaar.
+
+### Mailrollback
+
+Bij afwijkende afzenderauthenticatie, privacy-inhoud, dubbele mail of
+providerstoring:
+
+1. zet backend-side `CONFIRMATION_EMAIL_ENABLED=false` en schakel de
+   `processConfirmationEmailOutbox()`-trigger uit; RSVP-resolve en -submit mogen
+   blijven werken en blijven het ontvangstnummer op het scherm tonen;
+2. zet `VITE_RSVP_CONFIRMATION_EMAIL_ENABLED=false` en publiceer de beoordeelde
+   Pages-fallback zodat de site geen mail belooft;
+3. laat `queued`, `sending`, `retry` en `manual_review`-items staan, inspecteer
+   ze onder beperkte toegang en verstuur onzekere items niet blind opnieuw;
+4. trek bij mogelijk sleutelmisbruik de Resend-key in en maak later een nieuwe
+   domeinbeperkte sending-only key; zet nooit een oude key terug;
+5. herstel code alleen met een nieuwe beoordeelde Apps Script-versie. Verwijder
+   tijdens een incident geen RSVP- of outboxdata en draai geen Sheetrevision
+   terug;
+6. verwijder DNS-records niet als snelle rollback. Doe dit alleen bij definitief
+   uitfaseren, aan de hand van de dan actuele Resend-records en na een aparte
+   controle dat website en inkomende TransIP-mail onaangetast blijven.
+
 ## Test- en productiedeployment
 
 Richt eerst test volledig in en herhaal de stappen pas daarna voor productie:
@@ -370,7 +551,7 @@ Richt eerst test volledig in en herhaal de stappen pas daarna voor productie:
 4. Vul omgevingsspecifieke Script Properties in. Hergebruik geen testsecret,
    Sheet of deployment in productie.
 5. Voer `initSheet()` handmatig uit, autoriseer alleen de gevraagde scopes en
-   controleer de vijf tabs en headers.
+   controleer alle tabs en exacte headers, inclusief `EmailOutbox`.
 6. Provision testhuishoudens en gasten. Sla alleen de juiste keyed hash op;
    nooit de ruwe token of huishoudcode. Vul variant en booleanbeleid exact in,
    controleer dat ieder huishouden hooguit `maxGuests` vooraf ingestelde
@@ -380,9 +561,12 @@ Richt eerst test volledig in en herhaal de stappen pas daarna voor productie:
    **ikzelf**, toegang **iedereen**. De Sheet zelf blijft Beperkt.
 8. Bewaar de `/exec`-URL alleen in de overeenkomstige Worker-secret/config.
    Gebruik nooit een `/dev`-URL in productie.
-9. Voer de volledige testmatrix uit. Maak daarna voor productie een nieuwe
+9. Laat bevestigingsmail standaard uit. Volg voor mail afzonderlijk de
+   [Resend-migratie](#veilige-resend-migratie-en-activering); een gewone
+   writerdeployment activeert geen mail.
+10. Voer de volledige testmatrix uit. Maak daarna voor productie een nieuwe
    Sheet, Apps Script-project, deployment en eigen secrets.
-10. Controleer vóór activatie nogmaals dat de productie-Sheet daadwerkelijk
+11. Controleer vóór activatie nogmaals dat de productie-Sheet daadwerkelijk
     eigendom is van het afgesproken Google-eigenaaraccount. Maak in de agenda van die
     eigenaar een verplichte herinnering voor de definitieve verwijderprocedure,
     ruim vóór en uiterlijk op **1 augustus 2027 00:00 Europe/Amsterdam**.
@@ -392,6 +576,11 @@ een request na de durable intent mislukken, controleer `status=pending`, voer
 `recoverAllPendingIntents()` uit en verifieer precies één Response, één Audit,
 alle gastrevisions, de stabiele receipt en `status=completed`. Activeer geen
 productie-Worker zolang een pending of ongeldige intent resteert.
+
+Test de outbox afzonderlijk met een installable time-driven trigger van exact
+één minuut. Eén trigger is genoeg; dubbele triggers vergroten het risico op
+quota- en concurrencyproblemen. Controleer na inrichting onder **Triggers** dat
+alleen de bedoelde eigenaar, functie en frequentie staan ingesteld.
 
 Bij codewijzigingen maak je een nieuwe Apps Script-versie en werk je de
 bestaande deployment expliciet bij. Controleer daarna URL, eigenaar,
@@ -429,13 +618,18 @@ dan nog steeds bereiken. Een echte write-stop gebeurt backend-side:
 4. Verifieer vanaf een niet-ingelogde client dat de route geen resolve of
    submit meer accepteert. Registreer tijdstip en uitvoerder zonder RSVP-data.
 
+Alleen mail stoppen vereist geen RSVP-write-stop: volg daarvoor
+[Mailrollback](#mailrollback). De backendmailflag en outboxtrigger zijn de echte
+mailstop; de openbare Pages-vlag past alleen de tekst aan.
+
 ## Retentie, Sheet-clear en definitieve verwijdering
 
 Actieve RSVP-detaildata wordt uiterlijk **1 augustus 2027 00:00
 Europe/Amsterdam** definitief verwijderd. Vanaf dat tijdstip weigert de writer
 ook herstel van pending intents: de privacydeadline is de harde bovengrens.
-Er wordt bewust geen automatische trigger, Drive-scope of externe delete-actie
-aangemaakt.
+Er wordt bewust geen automatische delete-trigger, Drive-scope of externe
+delete-actie aangemaakt. De eventuele éénminuuttrigger verwerkt uitsluitend de
+`EmailOutbox` en verwijdert geen data.
 
 `clearRsvpSheetDataWithConfirmation()` gebruikt `clearContent()`. Dat maakt de
 actieve tabbladen leeg, maar is **geen definitieve verwijdering**: Google
@@ -445,15 +639,21 @@ De clear is uitsluitend defense-in-depth en een controleerbare tussenstap.
 Voer de definitieve productieprocedure met het afgesproken
 Google-eigenaaraccount ruim vóór en uiterlijk op de deadline uit:
 
-1. Voer de backend-stop hierboven uit: `RSVP_CLOSE_AT` in het verleden, herstel
+1. Voer de backend-stop hierboven uit: `RSVP_CLOSE_AT` in het verleden, zet
+   `CONFIRMATION_EMAIL_ENABLED=false`, schakel de éénminuuttrigger uit, herstel
    en controleer alle pending intents vóór de deadline, en verwijder/deactiveer
-   daarna de Workerroute. Bevestig dat nieuwe requests gesloten zijn.
+   daarna de Workerroute. Wacht daarna langer dan zowel de fetchtimeout als de
+   claimlease (minimaal 61 seconden), controleer Apps Script Executions en
+   bevestig dat `EmailOutbox` geen `sending`-item of actieve uitvoering bevat.
+   De clearfunctie weigert fail-closed zolang de mailflag `true` is of een
+   `sending`-item bestaat. Bevestig ten slotte dat nieuwe requests gesloten zijn.
 2. Voer `previewRsvpSheetClear()` uit. Controleer environment, Spreadsheet ID,
    `permanentDeleteBy` en aantallen per tab.
 3. Zet tijdelijk Script Property `RSVP_SHEET_CLEAR_CONFIRMATION` op exact de
    geretourneerde `confirmationValue` en voer
    `clearRsvpSheetDataWithConfirmation()` uit.
-4. Lees alle vijf tabs terug: alleen headers mogen resteren. Controleer dat ook
+4. Lees alle tabs terug, inclusief `EmailOutbox`: alleen headers mogen
+   resteren. Controleer dat ook
    alle `intentJson`, intent-/completion-MACs en overige hersteldata weg zijn.
    De functie registreert `LAST_RSVP_SHEET_CLEAR_AT`, maar retourneert bewust
    `permanentDeletionCompleted: false`.
@@ -496,9 +696,11 @@ niet opnieuw als productiebron in.
    bij aanwezigheid verboden/leeg. Afwezig mag nooit een mealChoice hebben.
    Top-level attending en aantal aanwezigen moeten kloppen met de gastkeuzes en
    `maxGuests`.
-8. E-mail en bericht werken zowel afwezig als aanwezig. Er wordt geen mail
-   verzonden. Resolve faalt bij afwijkende `guestCount`, ongeldige
-   `submittedAt`, ongeldige e-mail of te lange/ongeldige opgeslagen tekst.
+8. E-mail en bericht werken zowel afwezig als aanwezig. Met mail uit ontstaat
+   geen verzendbare bevestiging; met mail aan ontstaat voor een post-cutoff
+   submit met e-mailadres exact één duurzaam outboxitem. Resolve faalt bij
+   afwijkende `guestCount`, ongeldige `submittedAt`, ongeldige e-mail of te
+   lange/ongeldige opgeslagen tekst.
 9. Waarden beginnend met `=`, `+`, `-`, `@` of een letterlijke apostrof
    round-trippen exact als logische tekst; `getFormulas()` blijft leeg.
 10. Injecteer een fout na iedere durable grens (intent, Response,
@@ -519,11 +721,17 @@ niet opnieuw als productiebron in.
     één revisionverhoging op.
 13. Logs en Audit bevatten geen credential(hash), naam, e-mail, bericht of
     maaltijdkeuze.
-14. Test de Sheet-clear-preview, verkeerde confirmation (geen wijziging),
+14. Test de stabiele Resend-idempotencykey en het 24-uursvenster, eerste submit
+    en wijziging, Resend-succes, tijdelijke of onzekere fout, begrensde retry
+    met dezelfde sleutel, expliciet providerconflict en overgang naar
+    `manual_review` na 24 uur. Bewijs dat een exacte submitretry nooit een
+    tweede mail maakt, dat een mailfout de duurzame RSVP niet terugdraait en dat
+    mail/logs geen code, token, keuzes of bericht bevatten.
+15. Test de Sheet-clear-preview, verkeerde confirmation (geen wijziging),
     juiste testconfirmation (alle datarijen weg, headers behouden,
     `permanentDeletionCompleted=false`) en de productie-datumblokkade. Oefen
     daarnaast handmatig de volledige file-delete plus permanent verwijderen
     uit Prullenbak met een fictieve test-Sheet.
-15. Test `migrateInvitationSchemaV1ToV2()` met een pending intent (geen enkele
+16. Test `migrateInvitationSchemaV1ToV2()` met een pending intent (geen enkele
     wijziging), een geldige legacyrij (alle waarden behouden plus
     `day`/`TRUE`) en een tweede aanroep (`migrated: false`).

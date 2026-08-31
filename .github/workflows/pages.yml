@@ -46,8 +46,10 @@ jobs:
         env:
           # Public values only. The form requires enabled=true plus both
           # values; otherwise the coming-soon message remains rendered.
+          # Confirmation copy remains fail-closed unless its own flag is true.
           VITE_RSVP_ENABLED: ${{ vars.VITE_RSVP_ENABLED }}
           VITE_RSVP_HOUSEHOLD_CODES_ENABLED: ${{ vars.VITE_RSVP_HOUSEHOLD_CODES_ENABLED }}
+          VITE_RSVP_CONFIRMATION_EMAIL_ENABLED: ${{ vars.VITE_RSVP_CONFIRMATION_EMAIL_ENABLED }}
           VITE_RSVP_API_BASE_URL: ${{ vars.VITE_RSVP_API_BASE_URL }}
           VITE_TURNSTILE_SITE_KEY: ${{ vars.VITE_TURNSTILE_SITE_KEY }}
 

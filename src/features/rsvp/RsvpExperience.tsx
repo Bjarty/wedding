@@ -15,6 +15,11 @@ import {
 } from 'react';
 import { siteContent } from '../../content/siteContent';
 import { resolveHousehold, RsvpApiError, submitRsvp } from './api';
+import {
+  getEmailConfirmationNote,
+  getPrivacyMessage,
+  getReceiptHelperText,
+} from './confirmationEmailCopy';
 import type { RsvpConfig } from './config';
 import { requestTurnstileToken } from './turnstile';
 import type {
@@ -689,7 +694,18 @@ export default function RsvpExperience({
             className="mt-3 w-full rounded-2xl border border-stone-dark/20 bg-white/70 px-4 py-3 text-base outline-none transition focus:border-gold focus:ring-4 focus:ring-gold/20 disabled:opacity-60"
           />
           <p id="rsvp-email-helper" className="mt-2 text-sm leading-relaxed text-stone-dark/65">
-            {rsvp.form.emailHelper} {rsvp.form.emailConfirmationNote}
+            {demo ? getEmailConfirmationNote(rsvp, {
+              confirmationEmailEnabled: config.confirmationEmailEnabled,
+              demo,
+            }) : (
+              <>
+                {rsvp.form.emailHelper}{' '}
+                {getEmailConfirmationNote(rsvp, {
+                  confirmationEmailEnabled: config.confirmationEmailEnabled,
+                  demo,
+                })}
+              </>
+            )}
           </p>
           {errors.email !== undefined && (
             <p id="rsvp-email-error" className="mt-2 text-sm font-semibold text-red-800">
@@ -734,7 +750,12 @@ export default function RsvpExperience({
           <summary className="cursor-pointer font-bold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold">
             {rsvp.form.privacyHeading}
           </summary>
-          <p className="mt-3 text-sm leading-relaxed text-stone-dark/70">{rsvp.form.privacyMessage}</p>
+          <p className="mt-3 text-sm leading-relaxed text-stone-dark/70">
+            {getPrivacyMessage(rsvp, {
+              confirmationEmailEnabled: config.confirmationEmailEnabled,
+              demo,
+            })}
+          </p>
         </details>
 
         {receiptNumber !== null && (
@@ -746,9 +767,11 @@ export default function RsvpExperience({
               {receiptNumber}
             </p>
             <p className="mt-2 text-sm leading-relaxed text-stone-dark/65">
-              {demo
-                ? 'Dit ontvangstnummer is alleen onderdeel van de lokale demonstratie.'
-                : rsvp.states.receiptHelper}
+              {getReceiptHelperText(rsvp, {
+                confirmationEmailEnabled: config.confirmationEmailEnabled,
+                demo,
+                email: draft.email,
+              })}
             </p>
           </div>
         )}

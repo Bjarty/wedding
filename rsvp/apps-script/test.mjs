@@ -15,6 +15,25 @@ const faults = {
   rangeWrite: null,
   rangeWrites: [],
 };
+const urlFetch = {
+  requests: [],
+  responses: [],
+};
+const sheetReadMetrics = { getValues: new Map(), bulkGetValues: new Map() };
+
+const resetSheetReadMetrics = () => {
+  sheetReadMetrics.getValues.clear();
+  sheetReadMetrics.bulkGetValues.clear();
+};
+
+const queueUrlFetchResponse = (statusCode, body) => {
+  urlFetch.responses.push({ statusCode, body });
+};
+
+const resetUrlFetch = () => {
+  urlFetch.requests = [];
+  urlFetch.responses = [];
+};
 
 const resetFaults = () => {
   faults.flushCount = 0;
@@ -56,6 +75,16 @@ class MockRange {
   }
 
   getValues() {
+    sheetReadMetrics.getValues.set(
+      this.sheet.name,
+      (sheetReadMetrics.getValues.get(this.sheet.name) ?? 0) + 1,
+    );
+    if (this.rowCount > 1) {
+      sheetReadMetrics.bulkGetValues.set(
+        this.sheet.name,
+        (sheetReadMetrics.bulkGetValues.get(this.sheet.name) ?? 0) + 1,
+      );
+    }
     return Array.from({ length: this.rowCount }, (_, rowOffset) =>
       Array.from({ length: this.columnCount }, (_, columnOffset) =>
         this.sheet.getCell(this.row + rowOffset, this.column + columnOffset)));
@@ -245,6 +274,18 @@ const context = vm.createContext({
       }
     },
   },
+  UrlFetchApp: {
+    fetch: (url, options) => {
+      urlFetch.requests.push({ url, options: structuredClone(options) });
+      const response = urlFetch.responses.shift();
+      if (!response) throw new Error('Unexpected UrlFetchApp.fetch call');
+      if (response instanceof Error) throw response;
+      return {
+        getResponseCode: () => response.statusCode,
+        getContentText: () => JSON.stringify(response.body),
+      };
+    },
+  },
   LockService: { getScriptLock: () => scriptLock },
   Utilities: {
     Charset: { UTF_8: 'UTF-8' },
@@ -286,6 +327,12 @@ const guestHeaders = [
   'revision', 'updatedAt',
 ];
 assert.deepEqual(spreadsheet.getSheetByName('GuestDetails').rows[0], guestHeaders);
+assert.deepEqual(spreadsheet.getSheetByName('EmailOutbox').rows[0], [
+  'deliveryId', 'idempotencyKey', 'submitIntentMac', 'templateVersion', 'recipientEmail',
+  'receiptNumber', 'revision', 'createdAt', 'expiresAt', 'contentMac',
+  'status', 'attemptCount', 'firstAttemptAt', 'claimedAt', 'lastAttemptAt', 'nextAttemptAt',
+  'sentAt', 'providerMessageId', 'lastErrorCode', 'stateMac',
+]);
 
 const tokenHash = createHmac('sha256', 'separate-token-hash-secret-with-32-chars')
   .update('raw-token-that-never-reaches-the-writer')
@@ -432,11 +479,15 @@ const submitData = {
   email: 'gast@example.nl',
   message: '=IMPORTXML("https://example.invalid")',
 };
+properties.set('CONFIRMATION_EMAIL_ENABLED', 'TRUE');
 const firstSubmit = post(makeEnvelope('submit', submitData));
 assert.equal(firstSubmit.ok, true);
 assert.equal(firstSubmit.data.revision, 1);
 assert.match(firstSubmit.data.receiptNumber, /^RSVP-[A-Z0-9]{6,20}$/);
 assert.equal(firstSubmit.data.idempotencyKey, idempotencyKey);
+assert.equal(spreadsheet.getSheetByName('EmailOutbox').getLastRow(), 1);
+assert.equal(urlFetch.requests.length, 0);
+properties.delete('CONFIRMATION_EMAIL_ENABLED');
 
 const responseSheet = spreadsheet.getSheetByName('Responses');
 const responseHeader = responseSheet.rows[0];
@@ -1001,6 +1052,474 @@ testNowMilliseconds = preBoundaryTestNow;
 expectSingleDurableResult(retentionBoundaryData, retentionBoundaryIntent.result);
 durableRevision += 1;
 
+// Confirmation email delivery is separately durable and fail-safe. It uses a
+// new household so the first save, updates, removal of an address and retries
+// can be verified without changing the earlier WAL scenarios.
+const emailAccessCodeHash = createHmac('sha256', 'separate-access-code-secret-with-32-chars')
+  .update('EMAIL-TEST-CODE-NOT-SENT')
+  .digest('base64url');
+invitationSheet.getRange(4, 1, 1, invitationHeaders.length).setValues([[
+  'household_email', '', emailAccessCodeHash, 'Familie Mailtest', 'evening', false,
+  1, true, 0, new FixedDate(), new FixedDate(),
+]]);
+spreadsheet.getSheetByName('GuestDetails').getRange(5, 1, 1, 7).setValues([[
+  'household_email', 'guest_email_1', 'Geheime Gastnaam', '', '', 0, '',
+]]);
+properties.set('CONFIRMATION_EMAIL_ENABLED', 'true');
+properties.set('CONFIRMATION_EMAIL_ACTIVATED_AT', '2027-01-01T00:00:00+01:00');
+assert.equal(run('getConfirmationEmailActivationIso_()'), '2026-12-31T23:00:00.000Z');
+for (const invalidActivation of [
+  '2027-01-01T00:00:00',
+  '2027-02-29T00:00:00+01:00',
+  '2027-01-01T00:00:00+15:00',
+  '2027-01-01T00:00:00+02:60',
+]) {
+  properties.set('CONFIRMATION_EMAIL_ACTIVATED_AT', invalidActivation);
+  assert.throws(() => run('getConfirmationEmailActivationIso_()'), /time zone|valid zoned/);
+}
+properties.set(
+  'CONFIRMATION_EMAIL_ACTIVATED_AT',
+  new FixedDate(testNowMilliseconds - 1000).toISOString(),
+);
+properties.set('RESEND_API_KEY', 're_test_key_that_is_long_enough_123456');
+resetUrlFetch();
+
+const makeEmailSubmit = (revision, email, idempotencyKeyValue = randomUUID()) => ({
+  accessCodeHash: emailAccessCodeHash,
+  idempotencyKey: idempotencyKeyValue,
+  revision,
+  attending: true,
+  guests: [{ guestId: 'guest_email_1', attending: true }],
+  ...(email ? { email } : {}),
+  message: 'PRIVE BERICHT DAT NOOIT IN DE MAIL MAG STAAN',
+});
+
+const firstEmailKey = randomUUID();
+const firstEmailData = makeEmailSubmit(0, '=gast.mail@example.nl', firstEmailKey);
+const firstProviderId = randomUUID();
+queueUrlFetchResponse(200, { id: firstProviderId });
+const firstEmailSubmit = post(makeEnvelope('submit', firstEmailData));
+assert.equal(firstEmailSubmit.ok, true);
+assert.equal(firstEmailSubmit.data.revision, 1);
+assert.equal(urlFetch.requests.length, 1);
+let emailOutboxRows = rowsMatching('EmailOutbox', 'idempotencyKey', firstEmailKey);
+assert.equal(emailOutboxRows.length, 1);
+assert.equal(emailOutboxRows[0].values.status, 'sent');
+assert.equal(emailOutboxRows[0].values.providerMessageId, firstProviderId);
+
+const firstRequest = urlFetch.requests[0];
+assert.equal(firstRequest.url, 'https://api.resend.com/emails');
+assert.equal(firstRequest.options.timeoutSeconds, 10);
+assert.equal(firstRequest.options.muteHttpExceptions, true);
+assert.equal(firstRequest.options.headers['User-Agent'], 'LisetteBjarty-RSVP/1.0');
+assert.match(firstRequest.options.headers.Authorization, /^Bearer re_/);
+assert.match(firstRequest.options.headers['Idempotency-Key'], /^[A-Za-z0-9_-]{43}$/);
+assert.equal(firstRequest.options.headers['Idempotency-Key'].includes(firstEmailKey), false);
+const firstMailPayload = JSON.parse(firstRequest.options.payload);
+assert.equal(firstMailPayload.from, 'Lisette & Bjarty <rsvp@lisetteenbjarty.nl>');
+assert.equal(firstMailPayload.reply_to, 'rsvp@lisetteenbjarty.nl');
+assert.deepEqual(firstMailPayload.to, ['=gast.mail@example.nl']);
+assert.equal(firstMailPayload.text.includes(firstEmailSubmit.data.receiptNumber), true);
+assert.equal(firstMailPayload.text.includes('10 april 2027'), true);
+assert.equal(firstMailPayload.text.includes('https://lisetteenbjarty.nl/'), true);
+assert.equal(firstMailPayload.text.includes('geen toegangscode'), true);
+assert.equal(emailOutboxRows[0].values.templateVersion, 'rsvp_confirmation_v1');
+for (const forbidden of [
+  'EMAIL-TEST-CODE-NOT-SENT', emailAccessCodeHash, firstEmailKey,
+  'household_email', 'Familie Mailtest', 'Geheime Gastnaam',
+  'PRIVE BERICHT', 'guest_email_1', 'evening',
+]) {
+  assert.equal(firstRequest.options.payload.includes(forbidden), false, `${forbidden} leaked into mail`);
+}
+const firstEmailOutboxRow = rowsMatching('EmailOutbox', 'idempotencyKey', firstEmailKey)[0];
+const outboxRecipientColumn = spreadsheet.getSheetByName('EmailOutbox').rows[0]
+  .indexOf('recipientEmail') + 1;
+assert.equal(
+  spreadsheet.getSheetByName('EmailOutbox')
+    .getRange(firstEmailOutboxRow.rowNumber, outboxRecipientColumn, 1, 1).getFormulas()[0][0],
+  '',
+);
+context.__templateClaim = {
+  templateVersion: 'rsvp_confirmation_v1',
+  recipientEmail: 'snapshot@example.nl',
+  receiptNumber: 'RSVP-ABC123',
+};
+assert.deepEqual(hostValue(run('renderConfirmationEmail_(__templateClaim)')), {
+  from: 'Lisette & Bjarty <rsvp@lisetteenbjarty.nl>',
+  to: ['snapshot@example.nl'],
+  subject: 'Je RSVP is opgeslagen',
+  html: '<p>Hallo,</p><p>Je RSVP voor de bruiloft van Lisette &amp; Bjarty is opgeslagen.</p><p><strong>Bevestigingsnummer:</strong> RSVP-ABC123</p><p>Je kunt je reactie tot en met 10 april 2027 aanpassen via <a href="https://lisetteenbjarty.nl/#rsvp">https://lisetteenbjarty.nl/#rsvp</a>. Gebruik daarvoor dezelfde persoonlijke huishoudcode of uitnodigingslink als op de uitnodiging. Het bevestigingsnummer is geen toegangscode.</p><p>Hartelijke groet,<br>Lisette &amp; Bjarty</p>',
+  text: 'Hallo,\n\nJe RSVP voor de bruiloft van Lisette & Bjarty is opgeslagen.\n\nBevestigingsnummer: RSVP-ABC123\n\nJe kunt je reactie tot en met 10 april 2027 aanpassen via https://lisetteenbjarty.nl/#rsvp\nGebruik daarvoor dezelfde persoonlijke huishoudcode of uitnodigingslink als op de uitnodiging.\nHet bevestigingsnummer is geen toegangscode.\n\nHartelijke groet,\nLisette & Bjarty',
+  reply_to: 'rsvp@lisetteenbjarty.nl',
+});
+context.__templateClaim.templateVersion = 'unknown';
+assert.throws(() => run('renderConfirmationEmail_(__templateClaim)'), /unsupported/);
+
+// An exact API retry returns the same durable result and never sends again.
+assert.deepEqual(post(makeEnvelope('submit', firstEmailData)).data, firstEmailSubmit.data);
+assert.equal(urlFetch.requests.length, 1);
+assert.equal(rowsMatching('EmailOutbox', 'idempotencyKey', firstEmailKey).length, 1);
+
+tickTestClock();
+const updateEmailKey = randomUUID();
+const updateEmailData = makeEmailSubmit(1, 'nieuw-adres@example.nl', updateEmailKey);
+queueUrlFetchResponse(200, { id: randomUUID() });
+const updateEmailSubmit = post(makeEnvelope('submit', updateEmailData));
+assert.equal(updateEmailSubmit.data.revision, 2);
+assert.equal(updateEmailSubmit.data.receiptNumber, firstEmailSubmit.data.receiptNumber);
+assert.equal(urlFetch.requests.length, 2);
+assert.equal(rowsMatching('EmailOutbox', 'idempotencyKey', updateEmailKey)[0].values.status, 'sent');
+
+// Removing the optional address creates no outbox item and sends nothing.
+tickTestClock();
+const removedEmailKey = randomUUID();
+const removedEmailSubmit = post(makeEnvelope('submit', makeEmailSubmit(2, '', removedEmailKey)));
+assert.equal(removedEmailSubmit.data.revision, 3);
+assert.equal(rowsMatching('EmailOutbox', 'idempotencyKey', removedEmailKey).length, 0);
+assert.equal(urlFetch.requests.length, 2);
+
+// A submit older than the explicit activation boundary is never backfilled.
+properties.set(
+  'CONFIRMATION_EMAIL_ACTIVATED_AT',
+  new FixedDate(testNowMilliseconds + 10000).toISOString(),
+);
+const historicEmailKey = randomUUID();
+const historicSubmit = post(makeEnvelope('submit', makeEmailSubmit(3, 'historisch@example.nl', historicEmailKey)));
+assert.equal(historicSubmit.data.revision, 4);
+assert.equal(rowsMatching('EmailOutbox', 'idempotencyKey', historicEmailKey).length, 0);
+testNowMilliseconds += 11000;
+
+// Unauthenticated Idempotency timestamps cannot move an older authenticated
+// savedAt across the activation boundary.
+const historicIntentRow = rowsMatching('Idempotency', 'idempotencyKey', historicEmailKey)[0];
+const idempotencyTimestampColumns = ['requestTimestamp', 'createdAt', 'updatedAt']
+  .map((header) => idempotencyHeader.indexOf(header) + 1);
+const historicTimestampValues = idempotencyTimestampColumns
+  .map((column) => macSheet.getCell(historicIntentRow.rowNumber, column));
+const forgedAfterActivation = new FixedDate().toISOString();
+for (const column of idempotencyTimestampColumns) {
+  macSheet.setCell(historicIntentRow.rowNumber, column, forgedAfterActivation);
+}
+const requestsBeforeTimestampTamper = urlFetch.requests.length;
+run('processConfirmationEmailOutbox()');
+assert.equal(urlFetch.requests.length, requestsBeforeTimestampTamper);
+assert.equal(rowsMatching('EmailOutbox', 'idempotencyKey', historicEmailKey).length, 0);
+idempotencyTimestampColumns.forEach((column, index) => {
+  macSheet.setCell(historicIntentRow.rowNumber, column, historicTimestampValues[index]);
+});
+
+// Missing provider credentials affect only the mail attempt. The RSVP stays
+// successful and the durable outbox can be retried after configuration.
+const missingConfigKey = randomUUID();
+const requestsBeforeMissingConfig = urlFetch.requests.length;
+properties.delete('RESEND_API_KEY');
+const missingConfigSubmit = post(makeEnvelope(
+  'submit',
+  makeEmailSubmit(4, 'config@example.nl', missingConfigKey),
+));
+assert.equal(missingConfigSubmit.ok, true);
+assert.equal(missingConfigSubmit.data.revision, 5);
+assert.equal(urlFetch.requests.length, requestsBeforeMissingConfig);
+assert.equal(rowsMatching('EmailOutbox', 'idempotencyKey', missingConfigKey)[0].values.status, 'queued');
+assert.equal(rowsMatching('EmailOutbox', 'idempotencyKey', missingConfigKey)[0].values.firstAttemptAt, '');
+properties.set('RESEND_API_KEY', 're_test_key_that_is_long_enough_123456');
+const beforeQueuedAgeTest = testNowMilliseconds;
+testNowMilliseconds = Date.parse(
+  rowsMatching('EmailOutbox', 'idempotencyKey', missingConfigKey)[0].values.createdAt,
+) + (24 * 60 * 60 * 1000) + 1;
+queueUrlFetchResponse(200, { id: randomUUID() });
+assert.equal(hostValue(run('processConfirmationEmailOutbox()')).sent, 1);
+testNowMilliseconds = beforeQueuedAgeTest + 61000;
+
+// If enqueue itself fails after the RSVP completion commit, the API remains
+// successful and the public processor reconciles the missing row later.
+const reconciliationKey = randomUUID();
+const outboxSheet = spreadsheet.getSheetByName('EmailOutbox');
+failBeforeRangeWrite('EmailOutbox', outboxSheet.getLastRow() + 1, 1);
+const reconciliationSubmit = post(makeEnvelope(
+  'submit',
+  makeEmailSubmit(5, 'reconcile@example.nl', reconciliationKey),
+));
+assert.equal(reconciliationSubmit.ok, true);
+assert.equal(reconciliationSubmit.data.revision, 6);
+assert.equal(rowsMatching('EmailOutbox', 'idempotencyKey', reconciliationKey).length, 0);
+queueUrlFetchResponse(200, { id: randomUUID() });
+const reconciliationRun = hostValue(run('processConfirmationEmailOutbox()'));
+assert.equal(reconciliationRun.sent, 1);
+assert.equal(rowsMatching('EmailOutbox', 'idempotencyKey', reconciliationKey)[0].values.status, 'sent');
+
+// Retryable provider failures are recorded without failing the RSVP and are
+// retried with the same opaque provider idempotency key after backoff.
+tickTestClock();
+const retryEmailKey = randomUUID();
+urlFetch.responses.push(new Error('Injected provider network failure'));
+const retryEmailSubmit = post(makeEnvelope('submit', makeEmailSubmit(6, 'retry@example.nl', retryEmailKey)));
+assert.equal(retryEmailSubmit.ok, true);
+assert.equal(rowsMatching('EmailOutbox', 'idempotencyKey', retryEmailKey)[0].values.status, 'retry');
+const retryProviderKey = urlFetch.requests.at(-1).options.headers['Idempotency-Key'];
+testNowMilliseconds += 61000;
+queueUrlFetchResponse(200, { id: randomUUID() });
+resetSheetReadMetrics();
+const retryRun = hostValue(run('processConfirmationEmailOutbox()'));
+assert.equal(retryRun.sent, 1);
+assert.equal(sheetReadMetrics.bulkGetValues.get('Idempotency'), 2);
+assert.equal(sheetReadMetrics.bulkGetValues.get('Responses'), 2);
+assert.equal(sheetReadMetrics.bulkGetValues.get('EmailOutbox'), 2);
+assert.equal(rowsMatching('EmailOutbox', 'idempotencyKey', retryEmailKey)[0].values.status, 'sent');
+assert.equal(urlFetch.requests.at(-1).options.headers['Idempotency-Key'], retryProviderKey);
+
+// Resend's concurrent-idempotency conflict is retryable with the exact same
+// provider key once the concurrent request has settled.
+const concurrentConflictEmailKey = randomUUID();
+queueUrlFetchResponse(409, { name: 'concurrent_idempotent_requests' });
+assert.equal(post(makeEnvelope(
+  'submit',
+  makeEmailSubmit(7, 'provider-concurrent@example.nl', concurrentConflictEmailKey),
+)).ok, true);
+assert.equal(
+  rowsMatching('EmailOutbox', 'idempotencyKey', concurrentConflictEmailKey)[0].values.status,
+  'retry',
+);
+const concurrentConflictProviderKey = urlFetch.requests.at(-1)
+  .options.headers['Idempotency-Key'];
+testNowMilliseconds += 61000;
+queueUrlFetchResponse(200, { id: randomUUID() });
+assert.equal(hostValue(run('processConfirmationEmailOutbox()')).sent, 1);
+assert.equal(
+  urlFetch.requests.at(-1).options.headers['Idempotency-Key'],
+  concurrentConflictProviderKey,
+);
+
+// Resend reports a payload mismatch for an idempotency key as permanent. It
+// must enter manual review and never be offered to the provider again.
+const invalidConflictEmailKey = randomUUID();
+queueUrlFetchResponse(409, { name: 'invalid_idempotent_request' });
+assert.equal(post(makeEnvelope(
+  'submit',
+  makeEmailSubmit(8, 'provider-invalid@example.nl', invalidConflictEmailKey),
+)).ok, true);
+const invalidConflictRow = rowsMatching(
+  'EmailOutbox',
+  'idempotencyKey',
+  invalidConflictEmailKey,
+)[0];
+assert.equal(invalidConflictRow.values.status, 'manual_review');
+assert.equal(invalidConflictRow.values.lastErrorCode, 'provider_idempotency_conflict');
+const requestsAfterInvalidConflict = urlFetch.requests.length;
+testNowMilliseconds += 61000;
+assert.deepEqual(hostValue(run('processConfirmationEmailOutbox()')), {
+  processed: 0,
+  sent: 0,
+  retry: 0,
+  manualReview: 0,
+});
+assert.equal(urlFetch.requests.length, requestsAfterInvalidConflict);
+
+// A durable sending claim prevents concurrent delivery. If its worker dies,
+// it is safely reclaimed after the lease with the same provider key.
+const concurrencyEmailKey = randomUUID();
+queueUrlFetchResponse(429, { name: 'rate_limit_exceeded' });
+assert.equal(post(makeEnvelope(
+  'submit',
+  makeEmailSubmit(9, 'concurrent@example.nl', concurrencyEmailKey),
+)).ok, true);
+testNowMilliseconds += 61000;
+context.__deliveryId = rowsMatching('EmailOutbox', 'idempotencyKey', concurrencyEmailKey)[0]
+  .values.deliveryId;
+const abandonedClaim = hostValue(run('claimConfirmationEmail_(__deliveryId)'));
+assert.equal(abandonedClaim.status, 'sending');
+assert.equal(run('claimConfirmationEmail_(__deliveryId)'), null);
+testNowMilliseconds += 61000;
+queueUrlFetchResponse(200, { id: randomUUID() });
+assert.equal(hostValue(run('processConfirmationEmailOutbox()')).sent, 1);
+assert.equal(rowsMatching('EmailOutbox', 'idempotencyKey', concurrencyEmailKey)[0].values.status, 'sent');
+
+// Invalid idempotency semantics are never blindly retried.
+const permanentEmailKey = randomUUID();
+queueUrlFetchResponse(200, { unexpected: 'malformed-success-body' });
+assert.equal(post(makeEnvelope(
+  'submit',
+  makeEmailSubmit(10, 'manual@example.nl', permanentEmailKey),
+)).ok, true);
+assert.equal(
+  rowsMatching('EmailOutbox', 'idempotencyKey', permanentEmailKey)[0].values.status,
+  'manual_review',
+);
+
+// Any outbox tampering fails closed before a provider request. Restoring the
+// authenticated value lets the retry proceed normally.
+const tamperEmailKey = randomUUID();
+queueUrlFetchResponse(500, { name: 'internal_server_error' });
+assert.equal(post(makeEnvelope(
+  'submit',
+  makeEmailSubmit(11, 'tamper@example.nl', tamperEmailKey),
+)).ok, true);
+testNowMilliseconds += 61000;
+const tamperRow = rowsMatching('EmailOutbox', 'idempotencyKey', tamperEmailKey)[0];
+const recipientColumn = outboxSheet.rows[0].indexOf('recipientEmail') + 1;
+outboxSheet.setCell(tamperRow.rowNumber, recipientColumn, 'aanvaller@example.nl');
+const requestsBeforeTamper = urlFetch.requests.length;
+assert.throws(() => run('processConfirmationEmailOutbox()'), /MAC|binding/);
+assert.equal(urlFetch.requests.length, requestsBeforeTamper);
+outboxSheet.setCell(tamperRow.rowNumber, recipientColumn, 'tamper@example.nl');
+queueUrlFetchResponse(200, { id: randomUUID() });
+assert.equal(hostValue(run('processConfirmationEmailOutbox()')).sent, 1);
+
+// An unresolved ambiguous delivery is never resent after Resend's 24-hour
+// idempotency window; operators must inspect it manually.
+const ambiguityEmailKey = randomUUID();
+queueUrlFetchResponse(500, { name: 'internal_server_error' });
+assert.equal(post(makeEnvelope(
+  'submit',
+  makeEmailSubmit(12, 'ambiguity@example.nl', ambiguityEmailKey),
+)).ok, true);
+const ambiguityRow = rowsMatching('EmailOutbox', 'idempotencyKey', ambiguityEmailKey)[0];
+const beforeAmbiguityCutoff = testNowMilliseconds;
+testNowMilliseconds = Date.parse(ambiguityRow.values.firstAttemptAt) + (24 * 60 * 60 * 1000) + 1;
+const requestsBeforeCutoff = urlFetch.requests.length;
+const ambiguitySummary = hostValue(run('processConfirmationEmailOutbox()'));
+assert.equal(urlFetch.requests.length, requestsBeforeCutoff);
+assert.equal(ambiguitySummary.manualReview, 1);
+assert.equal(
+  rowsMatching('EmailOutbox', 'idempotencyKey', ambiguityEmailKey)[0].values.status,
+  'manual_review',
+);
+testNowMilliseconds = beforeAmbiguityCutoff;
+
+// A newer revision supersedes retryable mail for the same household, including
+// when the address is removed. Another household's queued mail is untouched.
+const supersedeAccessCodeHash = createHmac('sha256', 'separate-access-code-secret-with-32-chars')
+  .update('SUPERSEDE-TEST-CODE')
+  .digest('base64url');
+const unrelatedAccessCodeHash = createHmac('sha256', 'separate-access-code-secret-with-32-chars')
+  .update('UNRELATED-MAIL-CODE')
+  .digest('base64url');
+invitationSheet.getRange(5, 1, 2, invitationHeaders.length).setValues([
+  ['household_supersede', '', supersedeAccessCodeHash, 'Supersede', 'evening', false,
+    1, true, 0, new FixedDate(), new FixedDate()],
+  ['household_unrelated', '', unrelatedAccessCodeHash, 'Unrelated', 'evening', false,
+    1, true, 0, new FixedDate(), new FixedDate()],
+]);
+spreadsheet.getSheetByName('GuestDetails').getRange(6, 1, 2, 7).setValues([
+  ['household_supersede', 'guest_supersede', 'Supersede gast', '', '', 0, ''],
+  ['household_unrelated', 'guest_unrelated', 'Unrelated gast', '', '', 0, ''],
+]);
+const makeSingleGuestEmailSubmit = (hash, guestId, revision, email, key = randomUUID()) => ({
+  accessCodeHash: hash,
+  idempotencyKey: key,
+  revision,
+  attending: true,
+  guests: [{ guestId, attending: true }],
+  ...(email ? { email } : {}),
+});
+
+properties.delete('RESEND_API_KEY');
+const unrelatedKey = randomUUID();
+assert.equal(post(makeEnvelope('submit', makeSingleGuestEmailSubmit(
+  unrelatedAccessCodeHash, 'guest_unrelated', 0, 'unrelated@example.nl', unrelatedKey,
+))).ok, true);
+assert.equal(rowsMatching('EmailOutbox', 'idempotencyKey', unrelatedKey)[0].values.status, 'queued');
+properties.set('RESEND_API_KEY', 're_test_key_that_is_long_enough_123456');
+
+const supersededWrongKey = randomUUID();
+queueUrlFetchResponse(500, { name: 'internal_server_error' });
+assert.equal(post(makeEnvelope('submit', makeSingleGuestEmailSubmit(
+  supersedeAccessCodeHash, 'guest_supersede', 0, 'fout@example.nl', supersededWrongKey,
+))).ok, true);
+assert.equal(rowsMatching('EmailOutbox', 'idempotencyKey', supersededWrongKey)[0].values.status, 'retry');
+
+const supersededNewKey = randomUUID();
+queueUrlFetchResponse(500, { name: 'internal_server_error' });
+assert.equal(post(makeEnvelope('submit', makeSingleGuestEmailSubmit(
+  supersedeAccessCodeHash, 'guest_supersede', 1, 'nieuw@example.nl', supersededNewKey,
+))).ok, true);
+assert.equal(rowsMatching('EmailOutbox', 'idempotencyKey', supersededWrongKey)[0].values.status, 'manual_review');
+assert.equal(rowsMatching('EmailOutbox', 'idempotencyKey', supersededWrongKey)[0].values.lastErrorCode, 'superseded');
+assert.equal(rowsMatching('EmailOutbox', 'idempotencyKey', supersededNewKey)[0].values.status, 'retry');
+assert.equal(rowsMatching('EmailOutbox', 'idempotencyKey', unrelatedKey)[0].values.status, 'queued');
+
+const removeSupersedeKey = randomUUID();
+const requestsBeforeEmailRemoval = urlFetch.requests.length;
+assert.equal(post(makeEnvelope('submit', makeSingleGuestEmailSubmit(
+  supersedeAccessCodeHash, 'guest_supersede', 2, '', removeSupersedeKey,
+))).ok, true);
+assert.equal(urlFetch.requests.length, requestsBeforeEmailRemoval);
+assert.equal(rowsMatching('EmailOutbox', 'idempotencyKey', supersededNewKey)[0].values.status, 'manual_review');
+assert.equal(rowsMatching('EmailOutbox', 'idempotencyKey', supersededNewKey)[0].values.lastErrorCode, 'superseded');
+assert.equal(rowsMatching('EmailOutbox', 'idempotencyKey', removeSupersedeKey).length, 0);
+assert.equal(rowsMatching('EmailOutbox', 'idempotencyKey', unrelatedKey)[0].values.status, 'queued');
+
+// Reconciliation consults only the current completed revision: removing old
+// outbox rows cannot resurrect mail for superseded addresses.
+const removedSupersededRows = [supersededWrongKey, supersededNewKey]
+  .map((key) => rowsMatching('EmailOutbox', 'idempotencyKey', key)[0].rowNumber)
+  .sort((left, right) => right - left);
+for (const rowNumber of removedSupersededRows) outboxSheet.rows.splice(rowNumber - 1, 1);
+run('reconcileConfirmationEmailOutbox_()');
+assert.equal(rowsMatching('EmailOutbox', 'idempotencyKey', supersededWrongKey).length, 0);
+assert.equal(rowsMatching('EmailOutbox', 'idempotencyKey', supersededNewKey).length, 0);
+assert.equal(rowsMatching('EmailOutbox', 'idempotencyKey', unrelatedKey)[0].values.status, 'queued');
+
+// A currently active sending claim is not mutated during an address update,
+// but once its lease expires reconciliation supersedes it instead of sending
+// the stale address again.
+const abandonedAccessCodeHash = createHmac('sha256', 'separate-access-code-secret-with-32-chars')
+  .update('ABANDONED-SENDING-CODE')
+  .digest('base64url');
+invitationSheet.getRange(7, 1, 1, invitationHeaders.length).setValues([[
+  'household_abandoned', '', abandonedAccessCodeHash, 'Abandoned', 'evening', false,
+  1, true, 0, new FixedDate(), new FixedDate(),
+]]);
+spreadsheet.getSheetByName('GuestDetails').getRange(8, 1, 1, 7).setValues([[
+  'household_abandoned', 'guest_abandoned', 'Abandoned gast', '', '', 0, '',
+]]);
+const abandonedOldKey = randomUUID();
+queueUrlFetchResponse(500, { name: 'internal_server_error' });
+assert.equal(post(makeEnvelope('submit', makeSingleGuestEmailSubmit(
+  abandonedAccessCodeHash, 'guest_abandoned', 0, 'oud@example.nl', abandonedOldKey,
+))).ok, true);
+testNowMilliseconds += 61000;
+context.__abandonedDeliveryId = rowsMatching('EmailOutbox', 'idempotencyKey', abandonedOldKey)[0]
+  .values.deliveryId;
+assert.equal(hostValue(run('claimConfirmationEmail_(__abandonedDeliveryId)')).status, 'sending');
+
+const abandonedNewKey = randomUUID();
+queueUrlFetchResponse(500, { name: 'internal_server_error' });
+assert.equal(post(makeEnvelope('submit', makeSingleGuestEmailSubmit(
+  abandonedAccessCodeHash, 'guest_abandoned', 1, 'actueel@example.nl', abandonedNewKey,
+))).ok, true);
+assert.equal(rowsMatching('EmailOutbox', 'idempotencyKey', abandonedOldKey)[0].values.status, 'sending');
+const requestsBeforeAbandonedReconcile = urlFetch.requests.length;
+testNowMilliseconds += 61000;
+run('reconcileConfirmationEmailOutbox_()');
+assert.equal(urlFetch.requests.length, requestsBeforeAbandonedReconcile);
+assert.equal(rowsMatching('EmailOutbox', 'idempotencyKey', abandonedOldKey)[0].values.status, 'manual_review');
+assert.equal(rowsMatching('EmailOutbox', 'idempotencyKey', abandonedOldKey)[0].values.lastErrorCode, 'superseded');
+assert.equal(rowsMatching('EmailOutbox', 'idempotencyKey', abandonedNewKey)[0].values.status, 'retry');
+
+// Ambiguous Sheet flushes at claim and finalize boundaries remain recoverable:
+// no provider call occurs before a durable claim, and a sent state written
+// before an ambiguous finalize flush prevents a duplicate call.
+context.__unrelatedDeliveryId = rowsMatching('EmailOutbox', 'idempotencyKey', unrelatedKey)[0]
+  .values.deliveryId;
+const requestsBeforeClaimFault = urlFetch.requests.length;
+failAtFlush(1);
+assert.throws(() => run('processOneConfirmationEmail_(__unrelatedDeliveryId)'), /Injected flush failure/);
+assert.equal(urlFetch.requests.length, requestsBeforeClaimFault);
+assert.equal(rowsMatching('EmailOutbox', 'idempotencyKey', unrelatedKey)[0].values.status, 'sending');
+resetFaults();
+testNowMilliseconds += 61000;
+queueUrlFetchResponse(200, { id: randomUUID() });
+failAtFlush(2);
+assert.throws(() => run('processOneConfirmationEmail_(__unrelatedDeliveryId)'), /Injected flush failure/);
+assert.equal(urlFetch.requests.length, requestsBeforeClaimFault + 1);
+resetFaults();
+assert.equal(rowsMatching('EmailOutbox', 'idempotencyKey', unrelatedKey)[0].values.status, 'sent');
+assert.equal(run('processOneConfirmationEmail_(__unrelatedDeliveryId)'), null);
+assert.equal(urlFetch.requests.length, requestsBeforeClaimFault + 1);
+
+properties.set('CONFIRMATION_EMAIL_ENABLED', 'false');
+
 // A maliciously re-opened old intent must not roll the committed pointer back.
 const oldCompleted = rowsMatching('Idempotency', 'idempotencyKey', idempotencyKey)[0];
 macSheet.setCell(oldCompleted.rowNumber, statusColumn, 'pending');
@@ -1031,6 +1550,35 @@ assert.equal(preview.permanentDeleteBy, '2027-08-01T00:00:00+02:00');
 const rowsBeforeRejectedClear = Object.fromEntries(
   [...spreadsheet.sheets.entries()].map(([name, sheet]) => [name, sheet.getLastRow()]),
 );
+properties.set('CONFIRMATION_EMAIL_ENABLED', 'true');
+assert.throws(
+  () => run('clearRsvpSheetDataWithConfirmation()'),
+  /Disable confirmation email/,
+);
+assert.deepEqual(
+  Object.fromEntries([...spreadsheet.sheets.entries()].map(([name, sheet]) => [name, sheet.getLastRow()])),
+  rowsBeforeRejectedClear,
+);
+properties.set('CONFIRMATION_EMAIL_ENABLED', 'false');
+context.__clearRaceDeliveryId = rowsMatching('EmailOutbox', 'idempotencyKey', abandonedNewKey)[0]
+  .values.deliveryId;
+properties.set('CONFIRMATION_EMAIL_ENABLED', 'true');
+testNowMilliseconds += 61000;
+assert.equal(hostValue(run('claimConfirmationEmail_(__clearRaceDeliveryId)')).status, 'sending');
+properties.set('CONFIRMATION_EMAIL_ENABLED', 'false');
+assert.throws(
+  () => run('clearRsvpSheetDataWithConfirmation()'),
+  /still in flight/,
+);
+assert.deepEqual(
+  Object.fromEntries([...spreadsheet.sheets.entries()].map(([name, sheet]) => [name, sheet.getLastRow()])),
+  rowsBeforeRejectedClear,
+);
+properties.set('CONFIRMATION_EMAIL_ENABLED', 'true');
+testNowMilliseconds += 61000;
+queueUrlFetchResponse(200, { id: randomUUID() });
+assert.equal(hostValue(run('processOneConfirmationEmail_(__clearRaceDeliveryId)')).status, 'sent');
+properties.set('CONFIRMATION_EMAIL_ENABLED', 'false');
 properties.set('RSVP_SHEET_CLEAR_CONFIRMATION', 'WRONG');
 assert.throws(() => run('clearRsvpSheetDataWithConfirmation()'), /does not match/);
 assert.deepEqual(
@@ -1053,6 +1601,16 @@ assert.throws(() => run('clearRsvpSheetDataWithConfirmation()'), /blocked until/
 
 const manifest = JSON.parse(readFileSync(fileURLToPath(new URL('./appsscript.json', import.meta.url)), 'utf8'));
 assert.equal(manifest.oauthScopes.some((scope) => /gmail|mail\.google/u.test(scope)), false);
-assert.equal(writerLogMessages.every((message) => message === 'RSVP writer failed with an internal error.'), true);
+assert.equal(
+  manifest.oauthScopes.includes('https://www.googleapis.com/auth/script.external_request'),
+  true,
+);
+assert.equal(writerLogMessages.every((message) => [
+  'RSVP writer failed with an internal error.',
+  'RSVP confirmation email enqueue failed.',
+  'RSVP confirmation email processing failed.',
+].includes(message)), true);
+assert.equal(writerLogMessages.join('\n').includes('gast.mail@example.nl'), false);
+assert.equal(writerLogMessages.join('\n').includes(firstEmailSubmit.data.receiptNumber), false);
 
 console.log('Apps Script writer tests passed.');

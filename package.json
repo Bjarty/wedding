@@ -9,7 +9,7 @@
     "build": "vite build",
     "typecheck": "tsc --noEmit",
     "validate:content": "tsx scripts/validate-content.ts",
-    "test:rsvp-ui": "tsx --test src/features/rsvp/api.test.ts src/features/rsvp/config.test.ts src/features/rsvp/demoRsvp.test.ts src/features/rsvp/householdCode.test.ts src/features/rsvp/inviteToken.test.ts src/features/rsvp/validation.test.ts",
+    "test:rsvp-ui": "tsx --test src/features/rsvp/api.test.ts src/features/rsvp/config.test.ts src/features/rsvp/confirmationEmailCopy.test.ts src/features/rsvp/demoRsvp.test.ts src/features/rsvp/householdCode.test.ts src/features/rsvp/inviteToken.test.ts src/features/rsvp/validation.test.ts",
     "test:rsvp-worker": "tsc -p rsvp/worker/tsconfig.json && node --test rsvp/worker/test/provision-household-code.test.mjs rsvp/worker/test/test-config.test.mjs rsvp/worker/test/worker.test.mjs",
     "test:rsvp-apps-script": "node rsvp/apps-script/test.mjs",
     "test:rsvp": "npm run test:rsvp-ui && npm run test:rsvp-worker && npm run test:rsvp-apps-script",

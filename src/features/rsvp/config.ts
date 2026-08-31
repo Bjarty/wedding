@@ -2,6 +2,7 @@ export interface RsvpConfig {
   apiBaseUrl: string;
   turnstileSiteKey: string;
   householdCodesEnabled: boolean;
+  confirmationEmailEnabled: boolean;
 }
 
 export interface RsvpEnvironment {
@@ -10,6 +11,7 @@ export interface RsvpEnvironment {
   readonly VITE_RSVP_API_BASE_URL?: string;
   readonly VITE_TURNSTILE_SITE_KEY?: string;
   readonly VITE_RSVP_HOUSEHOLD_CODES_ENABLED?: string;
+  readonly VITE_RSVP_CONFIRMATION_EMAIL_ENABLED?: string;
 }
 
 const normalizeApiBaseUrl = (value: string | undefined, allowLocalhost: boolean): string | null => {
@@ -48,6 +50,7 @@ export const parseRsvpConfig = (env: RsvpEnvironment | undefined): RsvpConfig | 
     apiBaseUrl,
     turnstileSiteKey,
     householdCodesEnabled: env.VITE_RSVP_HOUSEHOLD_CODES_ENABLED === 'true',
+    confirmationEmailEnabled: env.VITE_RSVP_CONFIRMATION_EMAIL_ENABLED === 'true',
   };
 };
 

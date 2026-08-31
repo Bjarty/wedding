@@ -17,6 +17,7 @@ const invitationDemoConfig = {
   apiBaseUrl: 'https://local-demo.invalid',
   turnstileSiteKey: 'local-demo',
   householdCodesEnabled: true,
+  confirmationEmailEnabled: false,
 };
 
 export default function RSVPForm() {

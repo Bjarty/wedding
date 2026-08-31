@@ -113,8 +113,8 @@ Initialiseer eerst de private Sheet met `initSheet()` volgens
 
 Maak per huishouden exact één `Invitations`-rij en één `GuestDetails`-rij per
 uitgenodigde persoon. Nieuwe gastregels starten met `revision=0`; `attending`,
-`mealChoice` en `updatedAt` blijven leeg. `Responses`, `Idempotency` en `Audit`
-worden niet handmatig gevuld.
+`mealChoice` en `updatedAt` blijven leeg. `Responses`, `Idempotency`, `Audit` en
+`EmailOutbox` worden niet handmatig gevuld.
 
 Richt namen, variant, maaltijdbeleid en capaciteit in vóór verspreiding en vóór
 de eerste reactie. Wijzig `householdId`, `guestId`, credentialhashes of revision
@@ -144,6 +144,14 @@ wijziging gebruikt dezelfde persoonlijke code, een nieuwe idempotency key en
 de actuele revision; na opslag wordt de revision precies één hoger terwijl het
 ontvangstnummer gelijk blijft.
 
+Als een e-mailadres is ingevuld én bevestigingsmail backend-side en op Pages
+afzonderlijk is geactiveerd, zet de Apps Script-writer na duurzame opslag een
+privacyarme bevestiging in `EmailOutbox`. Die mail bevat hetzelfde stabiele
+ontvangstnummer en geen code, token, gastkeuzes of vrij bericht. Het
+ontvangstnummer is geen wijzigingscredential: voor iedere latere wijziging blijft
+de persoonlijke huishoudcode nodig. Een mailfout maakt de opgeslagen RSVP niet
+ongedaan; het nummer blijft direct op het scherm staan.
+
 De code wordt niet permanent in de browser opgeslagen. Na sluiten of herladen
 voert de gast haar opnieuw in. Een verouderd gelijktijdig formulier krijgt
 `REVISION_CONFLICT` en moet eerst opnieuw resolven; zo overschrijft een oude
@@ -167,8 +175,10 @@ Test eerst end-to-end met uitsluitend synthetische gegevens: resolve via de
 gedeelde QR, eerste submit, opnieuw openen met dezelfde code, een wijziging,
 dag- en avondbeleid, typefout, ingetrokken code, rate limiting, retry en
 revisionconflict. Controleer de juiste rijen in `Responses`, `GuestDetails`,
-`Idempotency` en `Audit` en bevestig dat nergens een leesbare code of secret
-staat.
+`Idempotency`, `Audit` en `EmailOutbox` en bevestig dat nergens een leesbare
+code of secret staat. Test bij ingeschakelde mail ook een identieke retry binnen
+Resends 24-uurs-idempotencyvenster, een wijziging, providerfout en
+`manual_review`; iedere logische submit mag hooguit één mail opleveren.
 
 Maak daarna afzonderlijke productieresources; hergebruik niets uit test:
 
@@ -185,11 +195,20 @@ Maak daarna afzonderlijke productieresources; hergebruik niets uit test:
    [productierunbook](./worker/README.md#fail-closed-productieactivering). Gebruik
    aanvankelijk bij voorkeur het productie-`workers.dev`-endpoint zodat TransIP-
    DNS en mailrecords niet wijzigen;
-8. GitHub Actions-repositoryvariabelen
+8. afzonderlijke Resend-test en -productie-inrichting volgens de
+   [veilige mailmigratie](./apps-script/README.md#veilige-resend-migratie-en-activering),
+   met EU-verzendroute (niet verwarren met dataresidentie), tracking uit,
+   DPA/SCC-, VS-verwerking- en retentiebeoordeling, beperkte API-key,
+   uitsluitend de exacte DNS-records uit het Resend-dashboard en behoud van
+   alle bestaande GitHub Pages- en TransIP-mailrecords;
+9. backendmail pas vanaf een expliciete cutoff met
+   `CONFIRMATION_EMAIL_ENABLED=true`, en daarna pas de openbare Pages-vlag
+   `VITE_RSVP_CONFIRMATION_EMAIL_ENABLED=true`;
+10. GitHub Actions-repositoryvariabelen
    `VITE_RSVP_ENABLED=true`,
    `VITE_RSVP_HOUSEHOLD_CODES_ENABLED=true`,
    `VITE_RSVP_API_BASE_URL` en `VITE_TURNSTILE_SITE_KEY`;
-9. een beoordeelde Pages-build en een laatste productie-smoketest.
+11. een beoordeelde Pages-build en een laatste productie-smoketest.
 
 De Worker- en frontendvlag zijn twee aparte veiligheidsgrenzen. Alleen de
 frontend verbergen stopt een bestaande client niet; gebruik voor een echte

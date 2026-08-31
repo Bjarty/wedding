@@ -12,14 +12,25 @@ const MAX_INTENT_JSON_LENGTH_ = 20000;
 const LOCK_TIMEOUT_MILLISECONDS_ = 10000;
 const INTENT_MAC_DOMAIN_ = 'rsvp-intent-v1';
 const COMPLETION_MAC_DOMAIN_ = 'rsvp-completion-v1';
+const EMAIL_CONTENT_MAC_DOMAIN_ = 'rsvp-email-content-v1';
+const EMAIL_STATE_MAC_DOMAIN_ = 'rsvp-email-state-v1';
+const EMAIL_DELIVERY_ID_DOMAIN_ = 'rsvp-email-delivery-id-v1';
+const EMAIL_PROVIDER_KEY_DOMAIN_ = 'rsvp-email-provider-key-v1';
 const PRODUCTION_SHEET_CLEAR_EARLIEST_ = '2027-05-23T00:00:00+02:00';
 const RETENTION_DELETE_BY_ = '2027-08-01T00:00:00+02:00';
+const EMAIL_AMBIGUITY_CUTOFF_MILLISECONDS_ = 24 * 60 * 60 * 1000;
+const EMAIL_CLAIM_LEASE_MILLISECONDS_ = 60 * 1000;
+const EMAIL_OUTBOX_BATCH_SIZE_ = 20;
+const EMAIL_PROVIDER_URL_ = 'https://api.resend.com/emails';
+const CURRENT_EMAIL_TEMPLATE_VERSION_ = 'rsvp_confirmation_v1';
+const SUPPORTED_EMAIL_TEMPLATE_VERSIONS_ = new Set(['rsvp_confirmation_v1']);
 
 const REQUEST_ID_PATTERN_ = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const IDEMPOTENCY_KEY_PATTERN_ = REQUEST_ID_PATTERN_;
 const TOKEN_HASH_PATTERN_ = /^[A-Za-z0-9_-]{43}$/;
 const OPAQUE_ID_PATTERN_ = /^[A-Za-z0-9_-]{1,64}$/;
 const RECEIPT_NUMBER_PATTERN_ = /^RSVP-[A-Z0-9]{6,20}$/;
+const PROVIDER_MESSAGE_ID_PATTERN_ = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const MEAL_CHOICES_ = new Set(['fish', 'meat', 'vegetarian', 'vegan']);
 const INVITATION_VARIANTS_ = new Set(['day', 'evening']);
 const LEGACY_INVITATION_HEADERS_ = Object.freeze([
@@ -47,6 +58,7 @@ const SHEETS_ = Object.freeze({
   guestDetails: 'GuestDetails',
   idempotency: 'Idempotency',
   audit: 'Audit',
+  emailOutbox: 'EmailOutbox',
 });
 
 const HEADERS_ = Object.freeze({
@@ -113,6 +125,28 @@ const HEADERS_ = Object.freeze({
     'idempotencyKey',
     'requestId',
   ],
+  EmailOutbox: [
+    'deliveryId',
+    'idempotencyKey',
+    'submitIntentMac',
+    'templateVersion',
+    'recipientEmail',
+    'receiptNumber',
+    'revision',
+    'createdAt',
+    'expiresAt',
+    'contentMac',
+    'status',
+    'attemptCount',
+    'firstAttemptAt',
+    'claimedAt',
+    'lastAttemptAt',
+    'nextAttemptAt',
+    'sentAt',
+    'providerMessageId',
+    'lastErrorCode',
+    'stateMac',
+  ],
 });
 
 const TEXT_COLUMNS_ = Object.freeze({
@@ -132,6 +166,19 @@ const TEXT_COLUMNS_ = Object.freeze({
     'completionMac',
   ],
   Audit: ['auditId', 'operation', 'outcome', 'householdId', 'responseId', 'idempotencyKey', 'requestId'],
+  EmailOutbox: [
+    'deliveryId',
+    'idempotencyKey',
+    'submitIntentMac',
+    'templateVersion',
+    'recipientEmail',
+    'receiptNumber',
+    'contentMac',
+    'status',
+    'providerMessageId',
+    'lastErrorCode',
+    'stateMac',
+  ],
 });
 
 class ApiError_ extends Error {
@@ -142,7 +189,7 @@ class ApiError_ extends Error {
   }
 }
 
-/** Creates the five required tabs and exact headers without deleting data. */
+/** Creates the six required tabs and exact headers without deleting data. */
 function initSheet() {
   const spreadsheet = getConfiguredSpreadsheet_();
   assertExpectedOwner_(spreadsheet);
@@ -306,7 +353,7 @@ function previewRsvpSheetClear() {
 }
 
 /**
- * Clears visible data cells in all five RSVP tabs while preserving headers.
+ * Clears visible data cells in all six RSVP tabs while preserving headers.
  * This is a reset/defense-in-depth step, not permanent erasure: Sheet version
  * history may retain data until the owner deletes and empties the file trash.
  */
@@ -317,9 +364,15 @@ function clearRsvpSheetDataWithConfirmation() {
   }
 
   try {
+    if (confirmationEmailEnabled_()) {
+      throw new Error('Disable confirmation email before clearing RSVP Sheet data.');
+    }
     const spreadsheet = getConfiguredSpreadsheet_();
     assertExpectedOwner_(spreadsheet);
     assertSchema_(spreadsheet);
+    if (findRows_(spreadsheet.getSheetByName(SHEETS_.emailOutbox), 'status', 'sending').length > 0) {
+      throw new Error('Confirmation email delivery is still in flight; Sheet clear was blocked.');
+    }
     const preview = buildSheetClearPreview_(spreadsheet, new Date());
     if (!preview.eligibleNow) {
       throw new Error(`Production Sheet clear is blocked until ${PRODUCTION_SHEET_CLEAR_EARLIEST_}.`);
@@ -380,6 +433,1088 @@ function recoverAllPendingIntents() {
     const recovered = intents.map((entry) => applyPendingIntent_(spreadsheet, entry.row));
     return { recovered: recovered.length, results: recovered };
   });
+}
+
+/**
+ * Reconciles and delivers at most one bounded batch of confirmation emails.
+ * Install this as a time-driven trigger only after the Resend configuration
+ * and the activation timestamp have been reviewed. The function deliberately
+ * returns counts only: recipient addresses and provider details stay private.
+ */
+function processConfirmationEmailOutbox() {
+  if (!confirmationEmailEnabled_()) {
+    return { processed: 0, sent: 0, retry: 0, manualReview: 0 };
+  }
+
+  reconcileConfirmationEmailOutbox_();
+  const summary = { processed: 0, sent: 0, retry: 0, manualReview: 0 };
+  const candidates = listConfirmationEmailCandidates_(EMAIL_OUTBOX_BATCH_SIZE_);
+  for (const candidate of candidates) {
+    const outcome = processOneConfirmationEmail_(candidate.deliveryId, candidate);
+    if (!outcome) continue;
+    summary.processed += 1;
+    if (outcome.status === 'sent') summary.sent += 1;
+    else if (outcome.status === 'retry') summary.retry += 1;
+    else if (outcome.status === 'manual_review') summary.manualReview += 1;
+  }
+  return summary;
+}
+
+function confirmationEmailEnabled_() {
+  return PropertiesService.getScriptProperties()
+    .getProperty('CONFIRMATION_EMAIL_ENABLED') === 'true';
+}
+
+function getConfirmationEmailActivationIso_() {
+  const value = getRequiredProperty_('CONFIRMATION_EMAIL_ACTIVATED_AT').trim();
+  const match = /^(\d{4})-(\d{2})-(\d{2})T([01]\d|2[0-3]):([0-5]\d):([0-5]\d)(?:\.(\d{1,3}))?(Z|([+-])(\d{2}):(\d{2}))$/.exec(value);
+  if (!match) {
+    throw new Error('CONFIRMATION_EMAIL_ACTIVATED_AT must include an explicit ISO-8601 time zone.');
+  }
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const offsetHours = match[10] === undefined ? 0 : Number(match[10]);
+  const offsetMinutes = match[11] === undefined ? 0 : Number(match[11]);
+  const leapYear = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+  const daysInMonth = [31, leapYear ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+  if (month < 1 || month > 12 || day < 1 || day > daysInMonth[month - 1]
+      || offsetHours > 14 || (offsetHours === 14 && offsetMinutes !== 0)) {
+    throw new Error('CONFIRMATION_EMAIL_ACTIVATED_AT is not a valid zoned timestamp.');
+  }
+  const timestamp = Date.parse(value);
+  if (!Number.isFinite(timestamp)) {
+    throw new Error('CONFIRMATION_EMAIL_ACTIVATED_AT is not a valid zoned timestamp.');
+  }
+  return new Date(timestamp).toISOString();
+}
+
+function getResendApiKey_() {
+  const value = getRequiredProperty_('RESEND_API_KEY').trim();
+  if (!/^re_[A-Za-z0-9_-]{16,}$/.test(value)) {
+    throw new Error('RESEND_API_KEY has an unexpected format.');
+  }
+  return value;
+}
+
+function trySynchronizeConfirmationEmail_(spreadsheet, completedRow) {
+  if (!confirmationEmailEnabled_()) return '';
+  try {
+    supersedeOlderConfirmationEmails_(spreadsheet, completedRow);
+    return ensureConfirmationEmailOutboxRow_(spreadsheet, completedRow);
+  } catch (error) {
+    // Never include addresses, receipt numbers or exception messages in logs.
+    console.error('RSVP confirmation email enqueue failed.');
+    return '';
+  }
+}
+
+function ensureConfirmationEmailOutboxRow_(spreadsheet, completedRow) {
+  if (!confirmationEmailEnabled_()) return '';
+  if (!completedRow || completedRow.values.operation !== 'submit'
+      || completedRow.values.status !== 'completed') {
+    throw new Error('Confirmation email requires a completed submit intent.');
+  }
+  if (Date.now() >= Date.parse(RETENTION_DELETE_BY_)) return '';
+
+  const intent = readAndValidateSubmitIntent_(completedRow);
+  const activationIso = getConfirmationEmailActivationIso_();
+  // savedAt is inside the authenticated submit intent. The mutable
+  // Idempotency.createdAt cell must never be able to move the mail cutoff.
+  const submitCreatedAt = intent.result.savedAt;
+  if (Date.parse(submitCreatedAt) < Date.parse(activationIso)) return '';
+  const responseSheet = spreadsheet.getSheetByName(SHEETS_.responses);
+  const responseRow = findUniqueRow_(
+    responseSheet,
+    'householdId',
+    intent.householdId,
+  );
+  if (!responseRow) throw new Error('Confirmation submit has no current response.');
+  assertResponseRowHasNoFormulas_(responseSheet, responseRow);
+  const currentResponse = responseStateFromValues_(responseRow.values);
+  assertStoredResponseTextValid_(currentResponse);
+  if (currentResponse.revision > intent.targetRevision) return '';
+  if (currentResponse.revision !== intent.targetRevision
+      || currentResponse.receiptNumber !== intent.result.receiptNumber
+      || currentResponse.email !== intent.response.email) {
+    throw new Error('Confirmation submit does not match the current response.');
+  }
+  if (!intent.response.email) return '';
+  const secret = getRequiredProperty_('WRITER_HMAC_SECRET');
+  const deliveryId = hmacSha256Base64Url_(
+    JSON.stringify([
+      EMAIL_DELIVERY_ID_DOMAIN_,
+      intent.idempotencyKey,
+      String(completedRow.values.intentMac),
+    ]),
+    secret,
+  );
+  const sheet = spreadsheet.getSheetByName(SHEETS_.emailOutbox);
+  const existing = findUniqueRow_(sheet, 'deliveryId', deliveryId);
+  if (existing) {
+    readAndValidateConfirmationOutboxRow_(spreadsheet, existing);
+    return deliveryId;
+  }
+
+  const values = {
+    deliveryId,
+    idempotencyKey: intent.idempotencyKey,
+    submitIntentMac: String(completedRow.values.intentMac),
+    templateVersion: CURRENT_EMAIL_TEMPLATE_VERSION_,
+    recipientEmail: intent.response.email,
+    receiptNumber: intent.result.receiptNumber,
+    revision: intent.result.revision,
+    createdAt: submitCreatedAt,
+    expiresAt: new Date(RETENTION_DELETE_BY_).toISOString(),
+    contentMac: '',
+    status: 'queued',
+    attemptCount: 0,
+    firstAttemptAt: '',
+    claimedAt: '',
+    lastAttemptAt: '',
+    nextAttemptAt: submitCreatedAt,
+    sentAt: '',
+    providerMessageId: '',
+    lastErrorCode: '',
+    stateMac: '',
+  };
+  values.contentMac = computeEmailContentMac_(values);
+  values.stateMac = computeEmailStateMac_(values);
+  appendObjectRow_(sheet, HEADERS_.EmailOutbox, {
+    ...values,
+    recipientEmail: escapeForSheet_(values.recipientEmail),
+  });
+  SpreadsheetApp.flush();
+
+  const durable = findUniqueRow_(sheet, 'deliveryId', deliveryId);
+  if (!durable) throw new Error('Confirmation outbox row was not persisted.');
+  readAndValidateConfirmationOutboxRow_(spreadsheet, durable);
+  return deliveryId;
+}
+
+function buildConfirmationEmailOutboxPlan_(completedRow, intent, currentResponse, existingByDeliveryId) {
+  if (Date.now() >= Date.parse(RETENTION_DELETE_BY_)) return null;
+  const activationIso = getConfirmationEmailActivationIso_();
+  const submitCreatedAt = intent.result.savedAt;
+  if (Date.parse(submitCreatedAt) < Date.parse(activationIso)
+      || currentResponse.revision > intent.targetRevision) {
+    return null;
+  }
+  if (currentResponse.revision !== intent.targetRevision
+      || currentResponse.receiptNumber !== intent.result.receiptNumber
+      || currentResponse.email !== intent.response.email) {
+    throw new Error('Confirmation submit does not match the current response.');
+  }
+  if (!intent.response.email) return null;
+
+  const deliveryId = hmacSha256Base64Url_(
+    JSON.stringify([
+      EMAIL_DELIVERY_ID_DOMAIN_,
+      intent.idempotencyKey,
+      String(completedRow.values.intentMac),
+    ]),
+    getRequiredProperty_('WRITER_HMAC_SECRET'),
+  );
+  if (existingByDeliveryId.has(deliveryId)) {
+    return { deliveryId, values: null };
+  }
+  const values = {
+    deliveryId,
+    idempotencyKey: intent.idempotencyKey,
+    submitIntentMac: String(completedRow.values.intentMac),
+    templateVersion: CURRENT_EMAIL_TEMPLATE_VERSION_,
+    recipientEmail: intent.response.email,
+    receiptNumber: intent.result.receiptNumber,
+    revision: intent.result.revision,
+    createdAt: submitCreatedAt,
+    expiresAt: new Date(RETENTION_DELETE_BY_).toISOString(),
+    contentMac: '',
+    status: 'queued',
+    attemptCount: 0,
+    firstAttemptAt: '',
+    claimedAt: '',
+    lastAttemptAt: '',
+    nextAttemptAt: submitCreatedAt,
+    sentAt: '',
+    providerMessageId: '',
+    lastErrorCode: '',
+    stateMac: '',
+  };
+  values.contentMac = computeEmailContentMac_(values);
+  values.stateMac = computeEmailStateMac_(values);
+  return { deliveryId, values };
+}
+
+function supersedeOlderConfirmationEmails_(spreadsheet, completedRow) {
+  if (!completedRow || completedRow.values.operation !== 'submit'
+      || completedRow.values.status !== 'completed') {
+    throw new Error('Confirmation supersede requires a completed submit intent.');
+  }
+  const currentIntent = readAndValidateSubmitIntent_(completedRow);
+  const sheet = spreadsheet.getSheetByName(SHEETS_.emailOutbox);
+  const submitRowsByIdempotencyKey = new Map();
+  for (const row of readAllObjectRows_(spreadsheet.getSheetByName(SHEETS_.idempotency))) {
+    if (row.values.operation !== 'submit') continue;
+    const key = String(row.values.idempotencyKey || '');
+    if (submitRowsByIdempotencyKey.has(key)) throw new Error('Submit idempotency key is duplicated.');
+    submitRowsByIdempotencyKey.set(key, row);
+  }
+  // Validate every row before the first mutation so a tampered outbox fails
+  // closed without partially superseding other deliveries.
+  const outboxRows = readAllObjectRows_(sheet);
+  assertEmailOutboxRecipientFormulasEmpty_(sheet, outboxRows.length);
+  const entries = outboxRows.map((row) => ({
+    row,
+    value: readAndValidateConfirmationOutboxRow_(spreadsheet, row, {
+      submitRowsByIdempotencyKey,
+      formulasAlreadyChecked: true,
+    }),
+  }));
+  for (const entry of entries) {
+    const value = entry.value;
+    const abandonedSending = value.status === 'sending'
+      && Date.now() - Date.parse(value.claimedAt) >= EMAIL_CLAIM_LEASE_MILLISECONDS_;
+    if (value.householdId !== currentIntent.householdId
+        || value.revision >= currentIntent.targetRevision
+        || (!['queued', 'retry'].includes(value.status) && !abandonedSending)) {
+      continue;
+    }
+    writeConfirmationEmailState_(spreadsheet, entry.row, {
+      ...value,
+      status: 'manual_review',
+      claimedAt: '',
+      nextAttemptAt: '',
+      sentAt: '',
+      providerMessageId: '',
+      lastErrorCode: 'superseded',
+    });
+  }
+}
+
+function reconcileConfirmationEmailOutbox_() {
+  return withScriptLock_(() => {
+    if (!confirmationEmailEnabled_()) return { createdOrPresent: 0 };
+    const spreadsheet = getReadySpreadsheet_();
+    const idempotencySheet = spreadsheet.getSheetByName(SHEETS_.idempotency);
+    const responseSheet = spreadsheet.getSheetByName(SHEETS_.responses);
+    const outboxSheet = spreadsheet.getSheetByName(SHEETS_.emailOutbox);
+
+    // Build every index once. No Sheets mutation occurs until current
+    // responses, their submit intents and the complete outbox all validate.
+    const submitRowsByIdempotencyKey = new Map();
+    const completedRowsByHouseholdRevision = new Map();
+    for (const row of readAllObjectRows_(idempotencySheet)) {
+      if (row.values.operation !== 'submit') continue;
+      if (!['pending', 'completed'].includes(String(row.values.status))) {
+        throw new Error('Submit idempotency row has an unknown status.');
+      }
+      const idempotencyKey = String(row.values.idempotencyKey || '');
+      if (submitRowsByIdempotencyKey.has(idempotencyKey)) {
+        throw new Error('Submit idempotency key is duplicated.');
+      }
+      submitRowsByIdempotencyKey.set(idempotencyKey, row);
+      if (row.values.status !== 'completed') continue;
+      const binding = `${String(row.values.householdId)}\u0000${String(row.values.targetRevision)}`;
+      if (completedRowsByHouseholdRevision.has(binding)) {
+        throw new Error('Completed household revision is duplicated.');
+      }
+      completedRowsByHouseholdRevision.set(binding, row);
+    }
+
+    const currentResponseByHousehold = new Map();
+    const responseRows = readAllObjectRows_(responseSheet);
+    assertResponseFormulasEmpty_(responseSheet, responseRows.length);
+    const currentEntries = responseRows.map((responseRow) => {
+      const response = responseStateFromValues_(responseRow.values);
+      assertStoredResponseTextValid_(response);
+      if (currentResponseByHousehold.has(response.householdId)) {
+        throw new Error('Current response household is duplicated.');
+      }
+      currentResponseByHousehold.set(response.householdId, { row: responseRow, response });
+      const completedRow = completedRowsByHouseholdRevision.get(
+        `${response.householdId}\u0000${response.revision}`,
+      );
+      if (!completedRow) throw new Error('Current response has no completed submit intent.');
+      const intent = readAndValidateSubmitIntent_(completedRow);
+      if (intent.householdId !== response.householdId
+          || intent.response.email !== response.email
+          || intent.result.receiptNumber !== response.receiptNumber) {
+        throw new Error('Current response differs from its completed submit intent.');
+      }
+      return { row: completedRow, intent, response };
+    });
+    const currentIntentByHousehold = new Map(
+      currentEntries.map((entry) => [entry.intent.householdId, entry.intent]),
+    );
+
+    const outboxRows = readAllObjectRows_(outboxSheet);
+    assertEmailOutboxRecipientFormulasEmpty_(outboxSheet, outboxRows.length);
+    const validationOptions = { submitRowsByIdempotencyKey, formulasAlreadyChecked: true };
+    const outboxEntries = outboxRows.map((row) => ({
+      row,
+      value: readAndValidateConfirmationOutboxRow_(spreadsheet, row, validationOptions),
+    }));
+    const outboxByDeliveryId = new Map();
+    for (const entry of outboxEntries) {
+      if (outboxByDeliveryId.has(entry.value.deliveryId)) {
+        throw new Error('Confirmation delivery ID is duplicated.');
+      }
+      outboxByDeliveryId.set(entry.value.deliveryId, entry);
+    }
+
+    const statePlans = [];
+    for (const entry of outboxEntries) {
+      const latestIntent = currentIntentByHousehold.get(entry.value.householdId);
+      if (!latestIntent || entry.value.revision >= latestIntent.targetRevision) continue;
+      const abandonedSending = entry.value.status === 'sending'
+        && Date.now() - Date.parse(entry.value.claimedAt) >= EMAIL_CLAIM_LEASE_MILLISECONDS_;
+      if (!['queued', 'retry'].includes(entry.value.status) && !abandonedSending) continue;
+      statePlans.push({
+        row: entry.row,
+        target: prepareConfirmationEmailState_({
+          ...entry.value,
+          status: 'manual_review',
+          claimedAt: '',
+          nextAttemptAt: '',
+          sentAt: '',
+          providerMessageId: '',
+          lastErrorCode: 'superseded',
+        }),
+      });
+    }
+
+    const enqueuePlans = currentEntries
+      .map((entry) => buildConfirmationEmailOutboxPlan_(
+        entry.row,
+        entry.intent,
+        entry.response,
+        outboxByDeliveryId,
+      ))
+      .filter((plan) => plan !== null);
+    const newPlans = enqueuePlans.filter((plan) => plan.values !== null);
+
+    // All reads and MAC/binding validation have completed. Apply state changes
+    // and contiguous appends, then cross one shared flush boundary.
+    const columns = headerIndex_(HEADERS_.EmailOutbox);
+    for (const plan of statePlans) {
+      outboxSheet
+        .getRange(plan.row.rowNumber, columns.status + 1, 1, HEADERS_.EmailOutbox.length - columns.status)
+        .setValues([confirmationEmailStateCells_(plan.target)]);
+    }
+    if (newPlans.length > 0) {
+      outboxSheet
+        .getRange(outboxSheet.getLastRow() + 1, 1, newPlans.length, HEADERS_.EmailOutbox.length)
+        .setValues(newPlans.map((plan) => confirmationEmailOutboxCells_(plan.values)));
+    }
+    if (statePlans.length > 0 || newPlans.length > 0) {
+      SpreadsheetApp.flush();
+      const durableRows = readAllObjectRows_(outboxSheet);
+      assertEmailOutboxRecipientFormulasEmpty_(outboxSheet, durableRows.length);
+      const durableByDeliveryId = new Map();
+      for (const row of durableRows) {
+        const value = readAndValidateConfirmationOutboxRow_(spreadsheet, row, validationOptions);
+        if (durableByDeliveryId.has(value.deliveryId)) {
+          throw new Error('Confirmation delivery ID is duplicated after reconciliation.');
+        }
+        durableByDeliveryId.set(value.deliveryId, value);
+      }
+      for (const plan of statePlans) {
+        const durable = durableByDeliveryId.get(plan.target.deliveryId);
+        if (!durable || durable.status !== 'manual_review'
+            || durable.lastErrorCode !== 'superseded') {
+          throw new Error('Superseded confirmation state was not persisted.');
+        }
+      }
+      for (const plan of newPlans) {
+        const durable = durableByDeliveryId.get(plan.deliveryId);
+        if (!durable || durable.status !== 'queued') {
+          throw new Error('Queued confirmation outbox row was not persisted.');
+        }
+      }
+    }
+    return { createdOrPresent: enqueuePlans.length };
+  });
+}
+
+function listConfirmationEmailCandidates_(limit) {
+  return withScriptLock_(() => {
+    if (!confirmationEmailEnabled_()) return [];
+    const spreadsheet = getReadySpreadsheet_();
+    const idempotencySheet = spreadsheet.getSheetByName(SHEETS_.idempotency);
+    const responseSheet = spreadsheet.getSheetByName(SHEETS_.responses);
+    const outboxSheet = spreadsheet.getSheetByName(SHEETS_.emailOutbox);
+
+    const submitRowsByIdempotencyKey = new Map();
+    for (const row of readAllObjectRows_(idempotencySheet)) {
+      if (row.values.operation !== 'submit') continue;
+      const key = String(row.values.idempotencyKey || '');
+      if (submitRowsByIdempotencyKey.has(key)) throw new Error('Submit idempotency key is duplicated.');
+      submitRowsByIdempotencyKey.set(key, row);
+    }
+    const responseByHousehold = new Map();
+    const responseRows = readAllObjectRows_(responseSheet);
+    assertResponseFormulasEmpty_(responseSheet, responseRows.length);
+    for (const row of responseRows) {
+      const response = responseStateFromValues_(row.values);
+      assertStoredResponseTextValid_(response);
+      if (responseByHousehold.has(response.householdId)) {
+        throw new Error('Current response household is duplicated.');
+      }
+      responseByHousehold.set(response.householdId, { row, response });
+    }
+
+    const outboxRows = readAllObjectRows_(outboxSheet);
+    assertEmailOutboxRecipientFormulasEmpty_(outboxSheet, outboxRows.length);
+    const validationOptions = { submitRowsByIdempotencyKey, formulasAlreadyChecked: true };
+    const now = new Date();
+    return outboxRows
+      .map((row) => ({
+        row,
+        value: readAndValidateConfirmationOutboxRow_(spreadsheet, row, validationOptions),
+      }))
+      .sort((left, right) => Date.parse(left.value.createdAt) - Date.parse(right.value.createdAt)
+        || left.value.deliveryId.localeCompare(right.value.deliveryId))
+      .filter((entry) => {
+        const value = entry.value;
+        if (['sent', 'manual_review'].includes(value.status)) return false;
+        const responseEntry = responseByHousehold.get(value.householdId);
+        if (!responseEntry) throw new Error('Confirmation household has no current response.');
+        if (responseEntry.response.revision > value.revision) {
+          return value.status !== 'sending'
+            || now.getTime() - Date.parse(value.claimedAt) >= EMAIL_CLAIM_LEASE_MILLISECONDS_;
+        }
+        if (value.firstAttemptAt
+            && now.getTime() - Date.parse(value.firstAttemptAt)
+              >= EMAIL_AMBIGUITY_CUTOFF_MILLISECONDS_) {
+          return true;
+        }
+        if (value.status === 'sending'
+            && now.getTime() - Date.parse(value.claimedAt) < EMAIL_CLAIM_LEASE_MILLISECONDS_) {
+          return false;
+        }
+        if (value.status === 'retry' && Date.parse(value.nextAttemptAt) > now.getTime()) return false;
+        return ['queued', 'retry', 'sending'].includes(value.status);
+      })
+      .slice(0, limit)
+      .map((entry) => {
+        const submitRow = submitRowsByIdempotencyKey.get(entry.value.idempotencyKey);
+        const responseEntry = responseByHousehold.get(entry.value.householdId);
+        if (!submitRow || !responseEntry) throw new Error('Confirmation candidate binding disappeared.');
+        return {
+          deliveryId: entry.value.deliveryId,
+          outboxRowNumber: entry.row.rowNumber,
+          submitRowNumber: submitRow.rowNumber,
+          responseRowNumber: responseEntry.row.rowNumber,
+        };
+      });
+  });
+}
+
+function tryProcessConfirmationEmail_(deliveryId) {
+  try {
+    processOneConfirmationEmail_(deliveryId);
+  } catch (error) {
+    // The RSVP is already committed. Mail/tamper/config failures are surfaced
+    // through outbox state and this privacy-safe signal, never to the guest.
+    console.error('RSVP confirmation email processing failed.');
+  }
+}
+
+function processOneConfirmationEmail_(deliveryId, candidate) {
+  if (!confirmationEmailEnabled_()) return null;
+  // Validate private provider configuration before changing queued state.
+  // A missing key therefore leaves the message untouched and retryable.
+  const apiKey = getResendApiKey_();
+  const claim = claimConfirmationEmail_(deliveryId, candidate);
+  if (!claim) return null;
+  if (claim.transitionOnly) return { status: claim.status };
+
+  let providerOutcome;
+  let finalizedClaim = claim;
+  try {
+    const delivery = sendConfirmationEmailViaResend_(claim, apiKey);
+    finalizedClaim = delivery.claim;
+    providerOutcome = delivery.outcome;
+  } catch (error) {
+    providerOutcome = { classification: 'retry', code: 'provider_unavailable' };
+  }
+  return finalizeConfirmationEmailAttempt_(finalizedClaim, providerOutcome);
+}
+
+function claimConfirmationEmail_(deliveryId, candidate) {
+  return withScriptLock_(() => {
+    if (!confirmationEmailEnabled_()) return null;
+    if (Date.now() >= Date.parse(RETENTION_DELETE_BY_)) return null;
+    const spreadsheet = getReadySpreadsheet_();
+    const sheet = spreadsheet.getSheetByName(SHEETS_.emailOutbox);
+    const rows = deliveryId
+      ? (candidate
+        ? [readObjectRowAt_(sheet, candidate.outboxRowNumber)]
+        : findRows_(sheet, 'deliveryId', deliveryId))
+      : readAllObjectRows_(sheet);
+    if (deliveryId && rows.length > 1) throw new Error('Confirmation delivery ID is duplicated.');
+    if (candidate && String(rows[0].values.deliveryId || '') !== deliveryId) {
+      throw new Error('Confirmation outbox candidate row changed.');
+    }
+    let validationOptions;
+    if (candidate) {
+      const submitRow = readObjectRowAt_(
+        spreadsheet.getSheetByName(SHEETS_.idempotency),
+        candidate.submitRowNumber,
+      );
+      validationOptions = {
+        submitRowsByIdempotencyKey: new Map([[String(submitRow.values.idempotencyKey), submitRow]]),
+      };
+    }
+    const entries = rows
+      .map((row) => ({
+        row,
+        value: readAndValidateConfirmationOutboxRow_(spreadsheet, row, validationOptions),
+      }))
+      .sort((left, right) => Date.parse(left.value.createdAt) - Date.parse(right.value.createdAt));
+    const now = new Date();
+
+    for (const entry of entries) {
+      const value = entry.value;
+      if (['sent', 'manual_review'].includes(value.status)) continue;
+      const currentResponse = candidate
+        ? readObjectRowAt_(
+          spreadsheet.getSheetByName(SHEETS_.responses),
+          candidate.responseRowNumber,
+        )
+        : findUniqueRow_(
+          spreadsheet.getSheetByName(SHEETS_.responses),
+          'householdId',
+          value.householdId,
+        );
+      if (!currentResponse) throw new Error('Confirmation household has no current response.');
+      if (String(currentResponse.values.householdId) !== value.householdId) {
+        throw new Error('Confirmation response candidate row changed.');
+      }
+      const currentRevision = asInteger_(currentResponse.values.revision, 1, 1000001);
+      if (currentRevision > value.revision) {
+        const activeSending = value.status === 'sending'
+          && now.getTime() - Date.parse(value.claimedAt) < EMAIL_CLAIM_LEASE_MILLISECONDS_;
+        if (activeSending) continue;
+        writeConfirmationEmailState_(spreadsheet, entry.row, {
+          ...value,
+          status: 'manual_review',
+          claimedAt: '',
+          nextAttemptAt: '',
+          sentAt: '',
+          providerMessageId: '',
+          lastErrorCode: 'superseded',
+        }, validationOptions);
+        return { transitionOnly: true, status: 'manual_review' };
+      }
+      const ambiguityExpired = value.firstAttemptAt
+        && now.getTime() - Date.parse(value.firstAttemptAt)
+          >= EMAIL_AMBIGUITY_CUTOFF_MILLISECONDS_;
+      if (ambiguityExpired) {
+        const manual = {
+          ...value,
+          status: 'manual_review',
+          claimedAt: '',
+          nextAttemptAt: '',
+          lastErrorCode: 'ambiguity_window_expired',
+        };
+        writeConfirmationEmailState_(spreadsheet, entry.row, manual, validationOptions);
+        return { transitionOnly: true, status: 'manual_review' };
+      }
+      if (value.status === 'sending'
+          && now.getTime() - Date.parse(value.claimedAt) < EMAIL_CLAIM_LEASE_MILLISECONDS_) {
+        continue;
+      }
+      if (value.status === 'retry' && Date.parse(value.nextAttemptAt) > now.getTime()) continue;
+      if (!['queued', 'retry', 'sending'].includes(value.status)) {
+        throw new Error('Confirmation outbox status cannot be claimed.');
+      }
+
+      const claimedAt = now.toISOString();
+      const claimed = {
+        ...value,
+        status: 'sending',
+        attemptCount: value.attemptCount + 1,
+        firstAttemptAt: value.firstAttemptAt || claimedAt,
+        claimedAt,
+        lastAttemptAt: claimedAt,
+        nextAttemptAt: '',
+        sentAt: '',
+        providerMessageId: '',
+        lastErrorCode: '',
+      };
+      const durableClaim = writeConfirmationEmailState_(
+        spreadsheet,
+        entry.row,
+        claimed,
+        validationOptions,
+      );
+      if (candidate) {
+        durableClaim.outboxRowNumber = entry.row.rowNumber;
+        durableClaim.submitRowNumber = candidate.submitRowNumber;
+      }
+      return durableClaim;
+    }
+    return null;
+  });
+}
+
+function sendConfirmationEmailViaResend_(claim, apiKey) {
+  const providerKey = hmacSha256Base64Url_(
+    JSON.stringify([
+      EMAIL_PROVIDER_KEY_DOMAIN_,
+      claim.deliveryId,
+      claim.idempotencyKey,
+      claim.submitIntentMac,
+      claim.templateVersion,
+    ]),
+    getRequiredProperty_('WRITER_HMAC_SECRET'),
+  );
+  const payload = renderConfirmationEmail_(claim);
+  let response;
+  try {
+    response = UrlFetchApp.fetch(EMAIL_PROVIDER_URL_, {
+      method: 'post',
+      contentType: 'application/json',
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        'Idempotency-Key': providerKey,
+        'User-Agent': 'LisetteBjarty-RSVP/1.0',
+      },
+      payload: JSON.stringify(payload),
+      muteHttpExceptions: true,
+      timeoutSeconds: 10,
+    });
+  } catch (error) {
+    return {
+      claim,
+      outcome: { classification: 'retry', code: 'provider_unavailable' },
+    };
+  }
+  const statusCode = Number(response.getResponseCode());
+  const responseBody = parseProviderJson_(response.getContentText());
+  if (statusCode >= 200 && statusCode < 300
+      && responseBody
+      && typeof responseBody.id === 'string'
+      && PROVIDER_MESSAGE_ID_PATTERN_.test(responseBody.id)) {
+    return {
+      claim,
+      outcome: { classification: 'sent', code: '', providerMessageId: responseBody.id },
+    };
+  }
+
+  const providerErrorName = responseBody && typeof responseBody.name === 'string'
+    ? responseBody.name
+    : '';
+  if (statusCode === 409 && providerErrorName === 'concurrent_idempotent_requests') {
+    return { claim, outcome: { classification: 'retry', code: 'provider_concurrent' } };
+  }
+  if (statusCode === 409 && providerErrorName === 'invalid_idempotent_request') {
+    return {
+      claim,
+      outcome: { classification: 'manual_review', code: 'provider_idempotency_conflict' },
+    };
+  }
+  if (statusCode === 429 || statusCode >= 500) {
+    return {
+      claim,
+      outcome: {
+        classification: 'retry',
+        code: statusCode === 429 ? 'provider_rate_limited' : 'provider_unavailable',
+      },
+    };
+  }
+  return {
+    claim,
+    outcome: { classification: 'manual_review', code: 'provider_rejected' },
+  };
+}
+
+function renderConfirmationEmail_(claim) {
+  if (claim.templateVersion === 'rsvp_confirmation_v1') {
+    return renderConfirmationEmailV1_(claim);
+  }
+  throw new Error('Confirmation email template version is unsupported.');
+}
+
+// Immutable renderer: add a new version instead of changing this payload.
+function renderConfirmationEmailV1_(claim) {
+  // Keep every v1 payload value local to this renderer. Future templates must
+  // get their own constants so an already-claimed v1 retry stays byte-identical.
+  const from = 'Lisette & Bjarty <rsvp@lisetteenbjarty.nl>';
+  const replyTo = 'rsvp@lisetteenbjarty.nl';
+  const siteUrl = 'https://lisetteenbjarty.nl/#rsvp';
+  const rsvpDeadline = '10 april 2027';
+  const text = [
+    'Hallo,',
+    '',
+    'Je RSVP voor de bruiloft van Lisette & Bjarty is opgeslagen.',
+    '',
+    `Bevestigingsnummer: ${claim.receiptNumber}`,
+    '',
+    `Je kunt je reactie tot en met ${rsvpDeadline} aanpassen via ${siteUrl}`,
+    'Gebruik daarvoor dezelfde persoonlijke huishoudcode of uitnodigingslink als op de uitnodiging.',
+    'Het bevestigingsnummer is geen toegangscode.',
+    '',
+    'Hartelijke groet,',
+    'Lisette & Bjarty',
+  ].join('\n');
+  const html = [
+    '<p>Hallo,</p>',
+    '<p>Je RSVP voor de bruiloft van Lisette &amp; Bjarty is opgeslagen.</p>',
+    `<p><strong>Bevestigingsnummer:</strong> ${escapeHtml_(claim.receiptNumber)}</p>`,
+    `<p>Je kunt je reactie tot en met ${rsvpDeadline} aanpassen via `,
+    `<a href="${siteUrl}">${siteUrl}</a>. `,
+    'Gebruik daarvoor dezelfde persoonlijke huishoudcode of uitnodigingslink als op de uitnodiging. ',
+    'Het bevestigingsnummer is geen toegangscode.</p>',
+    '<p>Hartelijke groet,<br>Lisette &amp; Bjarty</p>',
+  ].join('');
+  const payload = {
+    from,
+    to: [claim.recipientEmail],
+    subject: 'Je RSVP is opgeslagen',
+    html,
+    text,
+    reply_to: replyTo,
+  };
+  return payload;
+}
+
+function finalizeConfirmationEmailAttempt_(claim, outcome) {
+  return withScriptLock_(() => {
+    const spreadsheet = getReadySpreadsheet_();
+    const sheet = spreadsheet.getSheetByName(SHEETS_.emailOutbox);
+    const hasCandidateLocation = Number.isInteger(claim.outboxRowNumber)
+      && Number.isInteger(claim.submitRowNumber);
+    const row = hasCandidateLocation
+      ? readObjectRowAt_(sheet, claim.outboxRowNumber)
+      : findUniqueRow_(sheet, 'deliveryId', claim.deliveryId);
+    if (!row) throw new Error('Claimed confirmation outbox row disappeared.');
+    if (String(row.values.deliveryId || '') !== claim.deliveryId) {
+      throw new Error('Claimed confirmation outbox row changed.');
+    }
+    let validationOptions;
+    if (hasCandidateLocation) {
+      const submitRow = readObjectRowAt_(
+        spreadsheet.getSheetByName(SHEETS_.idempotency),
+        claim.submitRowNumber,
+      );
+      validationOptions = {
+        submitRowsByIdempotencyKey: new Map([[String(submitRow.values.idempotencyKey), submitRow]]),
+      };
+    }
+    const current = readAndValidateConfirmationOutboxRow_(spreadsheet, row, validationOptions);
+    if (current.status !== 'sending'
+        || current.attemptCount !== claim.attemptCount
+        || current.claimedAt !== claim.claimedAt) {
+      throw new Error('Confirmation outbox claim changed unexpectedly.');
+    }
+
+    const now = new Date();
+    let target;
+    if (outcome.classification === 'sent') {
+      target = {
+        ...current,
+        status: 'sent',
+        claimedAt: '',
+        nextAttemptAt: '',
+        sentAt: now.toISOString(),
+        providerMessageId: outcome.providerMessageId,
+        lastErrorCode: '',
+      };
+    } else {
+      const ambiguityExpired = current.firstAttemptAt
+        && now.getTime() - Date.parse(current.firstAttemptAt)
+          >= EMAIL_AMBIGUITY_CUTOFF_MILLISECONDS_;
+      const manualReview = outcome.classification === 'manual_review' || ambiguityExpired;
+      target = {
+        ...current,
+        status: manualReview ? 'manual_review' : 'retry',
+        claimedAt: '',
+        nextAttemptAt: manualReview
+          ? ''
+          : new Date(now.getTime() + confirmationEmailRetryDelayMilliseconds_(current.attemptCount))
+            .toISOString(),
+        sentAt: '',
+        providerMessageId: '',
+        lastErrorCode: manualReview && ambiguityExpired
+          ? 'ambiguity_window_expired'
+          : outcome.code,
+      };
+    }
+    writeConfirmationEmailState_(spreadsheet, row, target, validationOptions);
+    return { status: target.status };
+  });
+}
+
+function confirmationEmailRetryDelayMilliseconds_(attemptCount) {
+  return Math.min(60 * 60 * 1000, (2 ** Math.min(Math.max(attemptCount, 1) - 1, 6)) * 60 * 1000);
+}
+
+function writeConfirmationEmailState_(spreadsheet, row, value, validationOptions) {
+  const sheet = spreadsheet.getSheetByName(SHEETS_.emailOutbox);
+  const target = prepareConfirmationEmailState_(value);
+  const columns = headerIndex_(HEADERS_.EmailOutbox);
+  const stateHeaders = HEADERS_.EmailOutbox.slice(columns.status);
+  sheet.getRange(row.rowNumber, columns.status + 1, 1, stateHeaders.length)
+    .setValues([confirmationEmailStateCells_(target)]);
+  SpreadsheetApp.flush();
+  const durable = validationOptions
+    ? readObjectRowAt_(sheet, row.rowNumber)
+    : findUniqueRow_(sheet, 'deliveryId', target.deliveryId);
+  if (!durable) throw new Error('Confirmation outbox state was not persisted.');
+  return readAndValidateConfirmationOutboxRow_(spreadsheet, durable, validationOptions);
+}
+
+function prepareConfirmationEmailState_(value) {
+  const target = { ...value, stateMac: '' };
+  target.stateMac = computeEmailStateMac_(target);
+  return target;
+}
+
+function confirmationEmailStateCells_(value) {
+  const columns = headerIndex_(HEADERS_.EmailOutbox);
+  return HEADERS_.EmailOutbox.slice(columns.status).map((header) => {
+    const cellValue = value[header];
+    if (['firstAttemptAt', 'claimedAt', 'lastAttemptAt', 'nextAttemptAt', 'sentAt'].includes(header)
+        && cellValue) {
+      return new Date(cellValue);
+    }
+    return cellValue;
+  });
+}
+
+function confirmationEmailOutboxCells_(value) {
+  return HEADERS_.EmailOutbox.map((header) => {
+    if (header === 'recipientEmail') return escapeForSheet_(value[header]);
+    if (['createdAt', 'expiresAt', 'firstAttemptAt', 'claimedAt', 'lastAttemptAt', 'nextAttemptAt', 'sentAt']
+      .includes(header) && value[header]) {
+      return new Date(value[header]);
+    }
+    return value[header];
+  });
+}
+
+function readAndValidateConfirmationOutboxRow_(spreadsheet, row, options) {
+  if (!row) throw new Error('Confirmation outbox row is missing.');
+  const value = {
+    deliveryId: String(row.values.deliveryId || ''),
+    idempotencyKey: String(row.values.idempotencyKey || ''),
+    submitIntentMac: String(row.values.submitIntentMac || ''),
+    templateVersion: String(row.values.templateVersion || ''),
+    recipientEmail: String(row.values.recipientEmail || ''),
+    receiptNumber: String(row.values.receiptNumber || ''),
+    revision: asInteger_(row.values.revision, 1, 1000001),
+    createdAt: toIsoTimestamp_(row.values.createdAt),
+    expiresAt: toIsoTimestamp_(row.values.expiresAt),
+    contentMac: String(row.values.contentMac || ''),
+    status: String(row.values.status || ''),
+    attemptCount: asInteger_(row.values.attemptCount, 0, 1000000),
+    firstAttemptAt: optionalIsoTimestamp_(row.values.firstAttemptAt),
+    claimedAt: optionalIsoTimestamp_(row.values.claimedAt),
+    lastAttemptAt: optionalIsoTimestamp_(row.values.lastAttemptAt),
+    nextAttemptAt: optionalIsoTimestamp_(row.values.nextAttemptAt),
+    sentAt: optionalIsoTimestamp_(row.values.sentAt),
+    providerMessageId: String(row.values.providerMessageId || ''),
+    lastErrorCode: String(row.values.lastErrorCode || ''),
+    stateMac: String(row.values.stateMac || ''),
+  };
+  if (!options || !options.formulasAlreadyChecked) {
+    const recipientColumn = headerIndex_(HEADERS_.EmailOutbox).recipientEmail + 1;
+    if (spreadsheet.getSheetByName(SHEETS_.emailOutbox)
+      .getRange(row.rowNumber, recipientColumn, 1, 1).getFormulas()[0][0] !== '') {
+      throw new Error('Confirmation recipient unexpectedly contains a formula.');
+    }
+  }
+  if (!TOKEN_HASH_PATTERN_.test(value.deliveryId)
+      || !IDEMPOTENCY_KEY_PATTERN_.test(value.idempotencyKey)
+      || !TOKEN_HASH_PATTERN_.test(value.submitIntentMac)
+      || !SUPPORTED_EMAIL_TEMPLATE_VERSIONS_.has(value.templateVersion)
+      || value.recipientEmail !== value.recipientEmail.trim().toLowerCase()
+      || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value.recipientEmail)
+      || value.recipientEmail.length > 254
+      || !RECEIPT_NUMBER_PATTERN_.test(value.receiptNumber)
+      || value.expiresAt !== new Date(RETENTION_DELETE_BY_).toISOString()
+      || !TOKEN_HASH_PATTERN_.test(value.contentMac)
+      || !['queued', 'sending', 'retry', 'sent', 'manual_review'].includes(value.status)
+      || !TOKEN_HASH_PATTERN_.test(value.stateMac)
+      || value.lastErrorCode.length > 80
+      || (value.providerMessageId && !PROVIDER_MESSAGE_ID_PATTERN_.test(value.providerMessageId))) {
+    throw new Error('Confirmation outbox row is invalid.');
+  }
+  if (!constantTimeEqual_(value.contentMac, computeEmailContentMac_(value))
+      || !constantTimeEqual_(value.stateMac, computeEmailStateMac_(value))) {
+    throw new Error('Confirmation outbox MAC is invalid.');
+  }
+  validateConfirmationEmailState_(value);
+
+  const submitRow = options && options.submitRowsByIdempotencyKey
+    ? options.submitRowsByIdempotencyKey.get(value.idempotencyKey) || null
+    : findUniqueRow_(
+      spreadsheet.getSheetByName(SHEETS_.idempotency),
+      'idempotencyKey',
+      value.idempotencyKey,
+    );
+  if (!submitRow || submitRow.values.operation !== 'submit' || submitRow.values.status !== 'completed') {
+    throw new Error('Confirmation outbox is not bound to a completed submit.');
+  }
+  const intent = readAndValidateSubmitIntent_(submitRow);
+  const expectedDeliveryId = hmacSha256Base64Url_(
+    JSON.stringify([
+      EMAIL_DELIVERY_ID_DOMAIN_,
+      intent.idempotencyKey,
+      String(submitRow.values.intentMac),
+    ]),
+    getRequiredProperty_('WRITER_HMAC_SECRET'),
+  );
+  if (!constantTimeEqual_(value.deliveryId, expectedDeliveryId)
+      || !constantTimeEqual_(value.submitIntentMac, String(submitRow.values.intentMac))
+      || value.recipientEmail !== intent.response.email
+      || value.receiptNumber !== intent.result.receiptNumber
+      || value.revision !== intent.result.revision
+      || value.createdAt !== intent.result.savedAt) {
+    throw new Error('Confirmation outbox binding is invalid.');
+  }
+  value.householdId = intent.householdId;
+  return value;
+}
+
+function validateConfirmationEmailState_(value) {
+  if (value.status === 'queued') {
+    if (value.attemptCount !== 0 || value.firstAttemptAt || value.claimedAt || value.lastAttemptAt
+        || !value.nextAttemptAt || value.sentAt || value.providerMessageId || value.lastErrorCode) {
+      throw new Error('Queued confirmation outbox state is invalid.');
+    }
+  } else if (value.status === 'sending') {
+    if (value.attemptCount < 1 || !value.claimedAt
+        || value.claimedAt !== value.lastAttemptAt || value.nextAttemptAt
+        || value.sentAt || value.providerMessageId || value.lastErrorCode) {
+      throw new Error('Sending confirmation outbox state is invalid.');
+    }
+  } else if (value.status === 'retry') {
+    if (value.attemptCount < 1 || value.claimedAt
+        || !value.nextAttemptAt || value.sentAt || value.providerMessageId || !value.lastErrorCode) {
+      throw new Error('Retry confirmation outbox state is invalid.');
+    }
+  } else if (value.status === 'sent') {
+    if (value.attemptCount < 1 || value.claimedAt || !value.lastAttemptAt
+        || value.nextAttemptAt || !value.sentAt || !value.providerMessageId || value.lastErrorCode) {
+      throw new Error('Sent confirmation outbox state is invalid.');
+    }
+  } else if (value.attemptCount < 0 || value.claimedAt || value.nextAttemptAt
+      || value.sentAt || value.providerMessageId || !value.lastErrorCode) {
+    throw new Error('Manual-review confirmation outbox state is invalid.');
+  }
+  const hasAttemptTimestamps = Boolean(value.firstAttemptAt && value.lastAttemptAt);
+  if ((value.attemptCount === 0 && (value.firstAttemptAt || value.lastAttemptAt))
+      || (value.attemptCount > 0 && !hasAttemptTimestamps)) {
+    throw new Error('Confirmation provider-attempt state is invalid.');
+  }
+  if (Date.parse(value.createdAt) >= Date.parse(value.expiresAt)
+      || (value.firstAttemptAt && Date.parse(value.firstAttemptAt) < Date.parse(value.createdAt))
+      || (value.lastAttemptAt && Date.parse(value.lastAttemptAt) < Date.parse(value.createdAt))
+      || (value.firstAttemptAt && value.lastAttemptAt
+        && Date.parse(value.lastAttemptAt) < Date.parse(value.firstAttemptAt))
+      || (value.sentAt && Date.parse(value.sentAt) < Date.parse(value.createdAt))) {
+    throw new Error('Confirmation outbox timestamps are invalid.');
+  }
+}
+
+function computeEmailContentMac_(value) {
+  return hmacSha256Base64Url_(JSON.stringify([
+    EMAIL_CONTENT_MAC_DOMAIN_,
+    value.deliveryId,
+    value.idempotencyKey,
+    value.submitIntentMac,
+    value.templateVersion,
+    value.recipientEmail,
+    value.receiptNumber,
+    value.revision,
+    toIsoTimestamp_(value.createdAt),
+    toIsoTimestamp_(value.expiresAt),
+  ]), getRequiredProperty_('WRITER_HMAC_SECRET'));
+}
+
+function computeEmailStateMac_(value) {
+  return hmacSha256Base64Url_(JSON.stringify([
+    EMAIL_STATE_MAC_DOMAIN_,
+    value.contentMac,
+    value.status,
+    Number(value.attemptCount),
+    optionalIsoTimestamp_(value.firstAttemptAt),
+    optionalIsoTimestamp_(value.claimedAt),
+    optionalIsoTimestamp_(value.lastAttemptAt),
+    optionalIsoTimestamp_(value.nextAttemptAt),
+    optionalIsoTimestamp_(value.sentAt),
+    value.providerMessageId || '',
+    value.lastErrorCode || '',
+  ]), getRequiredProperty_('WRITER_HMAC_SECRET'));
+}
+
+function optionalIsoTimestamp_(value) {
+  return value === '' || value === null || value === undefined ? '' : toIsoTimestamp_(value);
+}
+
+function readAllObjectRows_(sheet) {
+  const headers = HEADERS_[sheet.getName()];
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 2) return [];
+  return sheet.getRange(2, 1, lastRow - 1, headers.length).getValues().map((cells, index) => {
+    const values = {};
+    headers.forEach((header, column) => { values[header] = cells[column]; });
+    return { rowNumber: index + 2, values };
+  });
+}
+
+function readObjectRowAt_(sheet, rowNumber) {
+  if (!Number.isInteger(rowNumber) || rowNumber < 2 || rowNumber > sheet.getLastRow()) {
+    throw new Error(`${sheet.getName()} candidate row is invalid.`);
+  }
+  const headers = HEADERS_[sheet.getName()];
+  const cells = sheet.getRange(rowNumber, 1, 1, headers.length).getValues()[0];
+  if (cells.every((value) => value === '' || value === null || value === undefined)) {
+    throw new Error(`${sheet.getName()} candidate row is empty.`);
+  }
+  const values = {};
+  headers.forEach((header, column) => { values[header] = cells[column]; });
+  return { rowNumber, values };
+}
+
+function assertEmailOutboxRecipientFormulasEmpty_(sheet, rowCount) {
+  if (rowCount < 1) return;
+  const recipientColumn = headerIndex_(HEADERS_.EmailOutbox).recipientEmail + 1;
+  const formulas = sheet.getRange(2, recipientColumn, rowCount, 1).getFormulas();
+  if (formulas.some((row) => row[0] !== '')) {
+    throw new Error('Confirmation recipient unexpectedly contains a formula.');
+  }
+}
+
+function assertResponseFormulasEmpty_(sheet, rowCount) {
+  if (rowCount < 1) return;
+  const columns = headerIndex_(HEADERS_.Responses);
+  const firstColumn = Math.min(columns.email, columns.message) + 1;
+  const formulas = sheet.getRange(2, firstColumn, rowCount, 2).getFormulas();
+  if (formulas.some((row) => row.some((formula) => formula !== ''))) {
+    throw new Error('Response text cell unexpectedly contains a formula.');
+  }
+}
+
+function parseProviderJson_(value) {
+  try {
+    const parsed = JSON.parse(String(value || ''));
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null;
+  } catch (error) {
+    return null;
+  }
+}
+
+function escapeHtml_(value) {
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 }
 
 function doGet() {
@@ -640,7 +1775,8 @@ function resolveHousehold_(data, payloadHash, envelope) {
 }
 
 function submitResponse_(data, payloadHash, envelope) {
-  return withScriptLock_(() => {
+  let confirmationDeliveryId = '';
+  const result = withScriptLock_(() => {
     const spreadsheet = getReadySpreadsheet_();
     const candidateInvitation = getInvitationByCredentialHash_(spreadsheet, data);
     recoverPendingIntentsForHousehold_(spreadsheet, candidateInvitation.householdId);
@@ -655,6 +1791,7 @@ function submitResponse_(data, payloadHash, envelope) {
       if (priorRequest.values.status !== 'completed') {
         throw new Error('Recovered idempotency intent is not completed.');
       }
+      confirmationDeliveryId = trySynchronizeConfirmationEmail_(spreadsheet, priorRequest);
       return priorIntent.result;
     }
 
@@ -799,8 +1936,18 @@ function submitResponse_(data, payloadHash, envelope) {
     SpreadsheetApp.flush();
     const durableIntentRow = findUniqueRow_(idempotencySheet, 'idempotencyKey', data.idempotencyKey);
     if (!durableIntentRow) throw new Error('Write-ahead intent was not persisted.');
-    return applyPendingIntent_(spreadsheet, durableIntentRow);
+    const completedResult = applyPendingIntent_(spreadsheet, durableIntentRow);
+    const completedRow = findUniqueRow_(idempotencySheet, 'idempotencyKey', data.idempotencyKey);
+    confirmationDeliveryId = trySynchronizeConfirmationEmail_(spreadsheet, completedRow);
+    return completedResult;
   });
+  // Provider I/O is deliberately outside the RSVP ScriptLock. A mail/config
+  // failure is isolated from the already durable RSVP and never changes the
+  // successful API result returned to the guest.
+  if (confirmationDeliveryId) {
+    tryProcessConfirmationEmail_(confirmationDeliveryId);
+  }
+  return result;
 }
 
 function recoverPendingIntentsForHousehold_(spreadsheet, householdId) {

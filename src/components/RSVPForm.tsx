@@ -1,5 +1,3 @@
-import { motion } from 'motion/react';
-import { CalendarClock, Mail } from 'lucide-react';
 import { useLayoutEffect, useState } from 'react';
 import { siteContent } from '../content/siteContent';
 import { invitationDemoServices } from '../features/rsvp/demoRsvp';
@@ -11,6 +9,7 @@ import {
   shouldRemoveInviteFragment,
 } from '../features/rsvp/inviteToken';
 import HouseholdCodeEntry from './HouseholdCodeEntry';
+import RsvpUnavailable from './RsvpUnavailable';
 
 const rsvpConfig = getRsvpConfig();
 const invitationDemoConfig = {
@@ -21,7 +20,7 @@ const invitationDemoConfig = {
 };
 
 export default function RSVPForm() {
-  const { contacts, rsvp } = siteContent;
+  const { rsvp } = siteContent;
   const isLocalInvitationDemo =
     import.meta.env.DEV &&
     typeof window !== 'undefined' &&
@@ -93,25 +92,7 @@ export default function RSVPForm() {
             )}
           </div>
         ) : rsvpConfig === null ? (
-          <motion.div
-            initial={{ opacity: 0, y: 30 }}
-            whileInView={{ opacity: 1, y: 0 }}
-            viewport={{ once: true }}
-            className="card-glass mx-auto max-w-2xl rounded-[2.5rem] p-10 text-center shadow-2xl md:p-16"
-          >
-            <CalendarClock aria-hidden="true" className="mx-auto mb-6 h-12 w-12 text-olive" />
-            <h3 className="mb-4 text-4xl font-serif text-stone-dark">{rsvp.statusHeading}</h3>
-            <p className="mx-auto max-w-lg text-base font-light leading-relaxed text-stone-dark/70">
-              {rsvp.statusMessage}
-            </p>
-            <a
-              href={`mailto:${contacts.rsvpEmail}`}
-              className="mt-8 inline-flex items-center gap-3 rounded-full bg-stone-dark px-8 py-4 text-xs font-bold uppercase tracking-[0.2em] text-cream transition-colors hover:bg-jade focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-jade focus-visible:ring-offset-2 focus-visible:ring-offset-paper"
-            >
-              <Mail aria-hidden="true" className="h-4 w-4" />
-              {rsvp.contactLabel}
-            </a>
-          </motion.div>
+          <RsvpUnavailable isLocalPreview={import.meta.env.DEV} />
         ) : inviteToken !== null ? (
           <RsvpExperience
             config={rsvpConfig}

@@ -39,9 +39,13 @@ externe omgeving worden geprovisioned.
 
 ## RSVP-configuratie
 
-Kopieer `.env.example` alleen voor lokaal ontwikkelen naar `.env.local`.
-Gebruik geen verwijderde test-Worker of test-Sheet; laat de waarden fail-closed
-of vul bewust de openbare productieconfiguratie in:
+Zonder lokale RSVP-configuratie toont de websitevoorvertoning **RSVP is
+geopend**, met een link naar de live RSVP. Daar kunnen gasten hun persoonlijke
+code (`XXX-XXX`) invullen. Echte reacties worden alleen via de livewebsite
+verstuurd; lokaal wordt niet automatisch een demonstratie gestart.
+
+Kopieer `.env.example` alleen voor expliciet geconfigureerd lokaal ontwikkelen
+naar `.env.local`. Gebruik geen verwijderde test-Worker of test-Sheet:
 
 ```text
 VITE_RSVP_ENABLED=false
@@ -51,10 +55,14 @@ VITE_RSVP_API_BASE_URL=https://...
 VITE_TURNSTILE_SITE_KEY=...
 ```
 
-Zet `VITE_RSVP_ENABLED` en `VITE_RSVP_HOUSEHOLD_CODES_ENABLED` uitsluitend voor
-een bewuste lokale productiecontrole exact op `true`. Zonder de
-eerste vlag én beide endpointwaarden blijft “RSVP opent binnenkort” staan;
-zonder de tweede vlag verschijnt geen invoer voor huishoudcodes.
+Een actieve RSVP-build vereist `VITE_RSVP_ENABLED=true` én beide publieke
+endpointwaarden. Voor de invoer van persoonlijke codes moet ook
+`VITE_RSVP_HOUSEHOLD_CODES_ENABLED=true` zijn ingesteld. Bij ontbrekende
+configuratie in een productiebuild blijft het formulier veilig uit en verschijnt
+**RSVP is tijdelijk niet beschikbaar**, met een contactlink.
+Alleen de productievariabelen lokaal invullen is niet voldoende: de
+productie-Worker en Turnstile accepteren uitsluitend `lisetteenbjarty.nl`,
+niet localhost. Verruim deze beveiliging niet voor een lokale voorvertoning.
 De openbare bevestigingsmailvlag past alleen de tekst bij het optionele
 e-mailadres aan; zij activeert geen backendmail.
 Een Turnstile-sitekey en API-URL zijn openbaar; writer-URL's, HMAC-sleutels,

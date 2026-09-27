@@ -15,7 +15,7 @@ test('belooft alleen in de geactiveerde live-ervaring een bevestigingsmail', () 
     demo: false,
   });
   assert.match(enabled, /bevestigingsnummer ook automatisch naar dit adres/u);
-  assert.match(enabled, /huishoudcode of persoonlijke uitnodigingslink/u);
+  assert.match(enabled, /persoonlijke code of persoonlijke uitnodigingslink/u);
   assert.match(enabled, /tot en met 10 april 2027/u);
 
   const disabled = getEmailConfirmationNote(rsvp, {
@@ -42,7 +42,7 @@ test('legt onder het bevestigingsnummer de mailkeuze en echte aanpassingsroute u
     email: 'gast@example.nl',
   });
   assert.match(withEmail, /ditzelfde bevestigingsnummer ook naar het hierboven ingevulde e-mailadres/u);
-  assert.match(withEmail, /dezelfde huishoudcode of persoonlijke uitnodigingslink/u);
+  assert.match(withEmail, /dezelfde persoonlijke code of persoonlijke uitnodigingslink/u);
   assert.match(withEmail, /tot en met 10 april 2027/u);
 
   const withoutEmail = getReceiptHelperText(rsvp, {

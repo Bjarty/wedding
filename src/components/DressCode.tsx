@@ -14,7 +14,7 @@ export default function DressCode() {
           viewport={{ once: true, margin: '-80px' }}
           className="relative isolate overflow-hidden rounded-[2.5rem] border border-olive/20 bg-paper/80 p-8 shadow-[0_24px_70px_rgba(48,36,30,0.10)] md:p-16"
         >
-          <LanternWatermark className="-right-12 -top-20 -z-10 w-52 opacity-50 sm:right-4 sm:w-60" />
+          <LanternWatermark className="-right-12 -top-20 -z-10 w-52 opacity-20 sm:right-4 sm:w-60" />
           <div className="relative z-10 mx-auto max-w-3xl text-center">
             <div className="mx-auto mb-7 h-px w-16 bg-gold/70" aria-hidden="true" />
             <h2 className="mb-6 font-serif text-5xl sm:text-6xl">{content.heading}</h2>

@@ -9,8 +9,10 @@ naar:
 https://lisetteenbjarty.nl/#rsvp
 ```
 
-De QR bevat geen naam, gasttype, code of ander geheim. Iedere uitnodiging krijgt
-daarnaast als gewone tekst één unieke code van vier groepen van vijf tekens.
+De QR bevat geen naam, gasttype, code of ander geheim. Nieuwe uitnodigingen
+krijgen daarnaast als gewone tekst één unieke code van zes tekens, weergegeven
+als `XXX-XXX`. Reeds uitgegeven codes van twintig tekens blijven tijdens de
+overgang volledig bruikbaar.
 De gast scant de QR, voert de code in en ziet daarna alleen het vooraf
 ingerichte huishouden:
 
@@ -22,10 +24,9 @@ maaltijdregel niet bepalen.
 
 ## Een code veilig genereren
 
-Vereist: Node.js 22 en dezelfde `ACCESS_CODE_HASH_SECRET` van exact 64
-base64url-tekens als de bijbehorende Worker-omgeving. Gebruik voor test en
-productie verschillende secrets. Haal het secret lokaal op via een beveiligde,
-niet-gelogde methode en maak het alleen tijdelijk beschikbaar als
+Vereist: Node.js 22 en dezelfde productie-`ACCESS_CODE_HASH_SECRET` van exact
+64 base64url-tekens als de bijbehorende Worker. Haal het secret lokaal op via
+een beveiligde, niet-gelogde methode en maak het alleen tijdelijk beschikbaar als
 `ACCESS_CODE_HASH_SECRET`; zet de waarde nooit in een commando, document,
 chatbericht, screenshot of repositorybestand.
 
@@ -62,6 +63,8 @@ De doelmap moet al bestaan. De helper:
 
 - gebruikt cryptografische willekeur en het alfabet zonder `0`, `1`, `I`, `L`,
   `O` en `U`;
+- genereert voor nieuwe uitnodigingen zes tekens en formatteert die als
+  `XXX-XXX`;
 - weigert de publieke lokale demo-code;
 - berekent de domeingescheiden keyed hash;
 - schrijft met exclusieve bestandscreatie en overschrijft nooit een bestand;
@@ -71,6 +74,14 @@ De doelmap moet al bestaan. De helper:
 Verwijder `ACCESS_CODE_HASH_SECRET` direct na de run uit de lokale
 procesomgeving. Genereer bij heruitgifte een nieuwe code en trek de oude hash
 in; geef een oude code nooit opnieuw uit.
+
+De site en Worker accepteren tijdens de overgang exact zes of twintig
+genormaliseerde tekens. Normalisatie, het HMAC-domein en
+`ACCESS_CODE_HASH_SECRET` blijven gelijk. Daardoor blijven bestaande
+twintig-teken-hashes en uitnodigingen werken zonder wijziging van de Sheet.
+Verwijder de ondersteuning voor twintig tekens pas nadat de laatste oude code
+bewust is ingetrokken. Controleer bij iedere nieuwe uitgifte bovendien dat de
+gegenereerde `accessCodeHash` nog niet in `Invitations` voorkomt.
 
 ## Twee strikt gescheiden outputs
 

@@ -4,13 +4,17 @@ import { basename, dirname, isAbsolute, relative, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 export const ACCESS_CODE_ALPHABET = '23456789ABCDEFGHJKMNPQRSTVWXYZ';
-export const ACCESS_CODE_LENGTH = 20;
-export const PUBLIC_DEMO_ACCESS_CODE = '7K3MP9TWX4HCQ2RDV6FN';
+export const ACCESS_CODE_LENGTH = 6;
+export const LEGACY_ACCESS_CODE_LENGTH = 20;
+export const PUBLIC_DEMO_ACCESS_CODE = '7K3MP9';
+export const LEGACY_PUBLIC_DEMO_ACCESS_CODE = '7K3MP9TWX4HCQ2RDV6FN';
 export const SHARED_RSVP_URL = 'https://lisetteenbjarty.nl/#rsvp';
 
 const ACCESS_CODE_HASH_DOMAIN = 'rsvp-access-code-v1\0';
 const HOUSEHOLD_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
-const ACCESS_CODE_PATTERN = new RegExp(`^[${ACCESS_CODE_ALPHABET}]{${ACCESS_CODE_LENGTH}}$`);
+const ACCESS_CODE_PATTERN = new RegExp(
+  `^(?:[${ACCESS_CODE_ALPHABET}]{${ACCESS_CODE_LENGTH}}|[${ACCESS_CODE_ALPHABET}]{${LEGACY_ACCESS_CODE_LENGTH}})$`,
+);
 const SECRET_PATTERN = /^[A-Za-z0-9_-]{64}$/;
 const UNSAFE_CONTROL_PATTERN = /[\u0000-\u001F\u007F]/u;
 const SPREADSHEET_FORMULA_PREFIX = /^[=+\-@]/u;
@@ -25,13 +29,17 @@ export const normalizeAccessCode = (value) =>
 export const formatAccessCode = (value) => {
   const normalized = normalizeAccessCode(value);
   if (!ACCESS_CODE_PATTERN.test(normalized)) throw new Error('access code has an invalid format');
-  return normalized.match(/.{5}/g).join('-');
+  const groupSize = normalized.length === ACCESS_CODE_LENGTH ? 3 : 5;
+  return normalized.match(new RegExp(`.{${groupSize}}`, 'g')).join('-');
 };
 
 export const hashAccessCode = (accessCode, secret) => {
   const normalized = normalizeAccessCode(accessCode);
   if (!ACCESS_CODE_PATTERN.test(normalized)) throw new Error('access code has an invalid format');
-  if (normalized === PUBLIC_DEMO_ACCESS_CODE) {
+  if (
+    normalized === PUBLIC_DEMO_ACCESS_CODE
+    || normalized === LEGACY_PUBLIC_DEMO_ACCESS_CODE
+  ) {
     throw new Error('the public demo access code must never be provisioned');
   }
   if (typeof secret !== 'string' || !SECRET_PATTERN.test(secret) || new Set(secret).size < 16) {

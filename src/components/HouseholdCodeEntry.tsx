@@ -2,7 +2,6 @@ import { KeyRound, ShieldCheck } from 'lucide-react';
 import { type FormEvent, useId, useState } from 'react';
 import { siteContent } from '../content/siteContent';
 import {
-  formatHouseholdCode,
   isValidHouseholdCode,
   normalizeHouseholdCode,
 } from '../features/rsvp/householdCode';
@@ -32,7 +31,7 @@ export default function HouseholdCodeEntry({ onAccepted }: HouseholdCodeEntryPro
   return (
     <div className="card-glass mx-auto max-w-2xl rounded-[2.5rem] p-7 text-stone-dark shadow-2xl sm:p-10 md:p-12">
       <div className="text-center">
-        <KeyRound aria-hidden="true" className="mx-auto mb-5 h-11 w-11 text-[#8A5A03]" />
+        <KeyRound aria-hidden="true" className="mx-auto mb-5 h-11 w-11 text-olive" />
         <p className="text-xs font-bold uppercase tracking-[0.18em] text-stone-dark/60">
           {codeEntry.eyebrow}
         </p>
@@ -50,7 +49,7 @@ export default function HouseholdCodeEntry({ onAccepted }: HouseholdCodeEntryPro
           id={inputId}
           value={value}
           onChange={(event) => {
-            setValue(formatHouseholdCode(event.target.value));
+            setValue(event.target.value.toUpperCase());
             if (hasError) setHasError(false);
           }}
           inputMode="text"
@@ -58,10 +57,10 @@ export default function HouseholdCodeEntry({ onAccepted }: HouseholdCodeEntryPro
           autoCapitalize="characters"
           spellCheck={false}
           maxLength={23}
-          placeholder="XXXXX-XXXXX-XXXXX-XXXXX"
+          placeholder="XXX-XXX"
           aria-invalid={hasError}
           aria-describedby={`${helperId}${hasError ? ` ${errorId}` : ''}`}
-          className="mt-3 w-full rounded-2xl border border-stone-dark/20 bg-white/75 px-4 py-4 text-center font-mono text-base font-bold uppercase tracking-[0.14em] outline-none transition placeholder:text-stone-dark/30 focus:border-[#8A5A03] focus:ring-4 focus:ring-gold/20 sm:text-lg sm:tracking-[0.2em]"
+          className="mt-3 w-full rounded-2xl border border-stone-dark/20 bg-white/75 px-4 py-4 text-center font-mono text-base font-bold uppercase tracking-[0.14em] outline-none transition placeholder:text-stone-dark/30 focus:border-jade focus:ring-2 focus:ring-jade sm:text-lg sm:tracking-[0.2em]"
         />
         <p id={helperId} className="mt-3 text-sm leading-relaxed text-stone-dark/65">
           {codeEntry.helper}
@@ -73,7 +72,7 @@ export default function HouseholdCodeEntry({ onAccepted }: HouseholdCodeEntryPro
         )}
         <button
           type="submit"
-          className="mt-7 flex min-h-14 w-full items-center justify-center gap-3 rounded-full bg-stone-dark px-8 py-4 text-xs font-bold uppercase tracking-[0.18em] text-cream transition-colors hover:bg-[#8A5A03] focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-gold/40"
+          className="mt-7 flex min-h-14 w-full items-center justify-center gap-3 rounded-full bg-stone-dark px-8 py-4 text-xs font-bold uppercase tracking-[0.18em] text-cream transition-colors hover:bg-jade focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-jade focus-visible:ring-offset-2 focus-visible:ring-offset-paper"
         >
           <ShieldCheck aria-hidden="true" className="h-5 w-5" />
           {codeEntry.submitLabel}

@@ -123,7 +123,7 @@ const StatusPanel = ({
           type="button"
           onClick={retry}
           disabled={retryDelaySeconds > 0}
-          className="mt-8 rounded-full bg-stone-dark px-8 py-4 text-xs font-bold uppercase tracking-[0.2em] text-cream transition-colors hover:bg-gold focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-gold/40 disabled:cursor-wait disabled:opacity-60"
+          className="mt-8 rounded-full bg-stone-dark px-8 py-4 text-xs font-bold uppercase tracking-[0.2em] text-cream transition-colors hover:bg-gold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold focus-visible:ring-offset-2 focus-visible:ring-offset-paper disabled:cursor-wait disabled:opacity-60"
         >
           {rsvp.states.retryLabel}
         </button>
@@ -131,7 +131,7 @@ const StatusPanel = ({
       {showContact && (
         <a
           href={`mailto:${contacts.rsvpEmail}`}
-          className="mt-8 inline-flex items-center gap-3 rounded-full bg-stone-dark px-8 py-4 text-xs font-bold uppercase tracking-[0.2em] text-cream transition-colors hover:bg-gold focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-gold/40"
+          className="mt-8 inline-flex items-center gap-3 rounded-full bg-stone-dark px-8 py-4 text-xs font-bold uppercase tracking-[0.2em] text-cream transition-colors hover:bg-gold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold focus-visible:ring-offset-2 focus-visible:ring-offset-paper"
         >
           <Mail aria-hidden="true" className="h-4 w-4" />
           {rsvp.contactLabel}
@@ -522,7 +522,7 @@ export default function RsvpExperience({
         >
           {household.displayName}
         </h3>
-        <p className="mx-auto mt-4 w-fit rounded-full border border-[#8A5A03]/30 bg-gold/10 px-4 py-2 text-xs font-bold uppercase tracking-[0.14em] text-stone-dark/70">
+        <p className="mx-auto mt-4 w-fit rounded-full border border-olive/30 bg-sage/15 px-4 py-2 text-xs font-bold uppercase tracking-[0.14em] text-stone-dark/70">
           {household.invitationVariant === 'day'
             ? rsvp.form.dayVariantLabel
             : rsvp.form.eveningVariantLabel}
@@ -691,7 +691,7 @@ export default function RsvpExperience({
             aria-invalid={errors.email !== undefined}
             aria-describedby={`rsvp-email-helper${errors.email === undefined ? '' : ' rsvp-email-error'}`}
             disabled={editingLocked}
-            className="mt-3 w-full rounded-2xl border border-stone-dark/20 bg-white/70 px-4 py-3 text-base outline-none transition focus:border-gold focus:ring-4 focus:ring-gold/20 disabled:opacity-60"
+            className="mt-3 w-full rounded-2xl border border-stone-dark/20 bg-white/70 px-4 py-3 text-base outline-none transition focus:border-gold focus:ring-2 focus:ring-gold disabled:opacity-60"
           />
           <p id="rsvp-email-helper" className="mt-2 text-sm leading-relaxed text-stone-dark/65">
             {demo ? getEmailConfirmationNote(rsvp, {
@@ -731,7 +731,7 @@ export default function RsvpExperience({
             aria-invalid={errors.message !== undefined}
             aria-describedby={`rsvp-message-helper rsvp-message-count${errors.message === undefined ? '' : ' rsvp-message-error'}`}
             disabled={editingLocked}
-            className="mt-3 w-full resize-y rounded-2xl border border-stone-dark/20 bg-white/70 px-4 py-3 text-base outline-none transition focus:border-gold focus:ring-4 focus:ring-gold/20 disabled:opacity-60"
+            className="mt-3 w-full resize-y rounded-2xl border border-stone-dark/20 bg-white/70 px-4 py-3 text-base outline-none transition focus:border-gold focus:ring-2 focus:ring-gold disabled:opacity-60"
           />
           <div className="mt-2 flex flex-col gap-1 text-sm text-stone-dark/65 sm:flex-row sm:justify-between">
             <p id="rsvp-message-helper">{rsvp.form.messageHelper}</p>
@@ -787,7 +787,7 @@ export default function RsvpExperience({
         <button
           type="submit"
           disabled={editingLocked || retryAfterSeconds > 0}
-          className="flex min-h-14 w-full items-center justify-center gap-3 rounded-full bg-stone-dark px-8 py-4 text-xs font-bold uppercase tracking-[0.16em] text-cream transition-colors hover:bg-gold focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-gold/40 disabled:cursor-wait disabled:opacity-60 sm:tracking-[0.2em]"
+          className="flex min-h-14 w-full items-center justify-center gap-3 rounded-full bg-stone-dark px-8 py-4 text-xs font-bold uppercase tracking-[0.16em] text-cream transition-colors hover:bg-gold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold focus-visible:ring-offset-2 focus-visible:ring-offset-paper disabled:cursor-wait disabled:opacity-60 sm:tracking-[0.2em]"
         >
           {busy === 'submit' ? (
             <>

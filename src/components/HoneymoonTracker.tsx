@@ -39,7 +39,7 @@ export default function HoneymoonTracker() {
           <div className="absolute left-[39px] md:left-1/2 top-0 bottom-0 w-px bg-stone-dark/10 -translate-x-1/2">
              <motion.div 
                style={{ height: `${pathProgress.get()}%` }} 
-               className="w-full bg-gold shadow-[0_0_10px_rgba(202,138,4,0.5)]" 
+               className="w-full bg-olive shadow-[0_0_10px_rgba(105,112,80,0.35)]"
              />
           </div>
 

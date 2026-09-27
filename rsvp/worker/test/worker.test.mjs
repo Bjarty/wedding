@@ -13,6 +13,8 @@ const IDEMPOTENCY_KEY = '11111111-1111-4111-8111-111111111111';
 const RAW_TOKEN = 'AbCdEfGhIjKlMnOpQrStUvWxYz0123456789_-token';
 const RAW_ACCESS_CODE = '2a3bc-4d5ef 6g7hj-8kmnp';
 const NORMALIZED_ACCESS_CODE = '2A3BC4D5EF6G7HJ8KMNP';
+const RAW_SHORT_ACCESS_CODE = '2a3-bc4';
+const NORMALIZED_SHORT_ACCESS_CODE = '2A3BC4';
 const HASH_SECRET = 'token-hash-secret-that-is-at-least-32-bytes';
 const ACCESS_HASH_SECRET = 'abcdefghijklmnopqrstuvwxyz0123456789_-ABCDEFGHIJKLMNOPQRSTUVWXYZ';
 const WRITER_SECRET = 'writer-signing-secret-that-is-at-least-32-bytes';
@@ -305,6 +307,37 @@ test('access codes are normalized, domain-hashed, and never sent to the writer',
   assert.deepEqual((await parseJson(response)).data, resolveData);
 });
 
+test('new six-character access codes use the same domain-separated hash path', async () => {
+  const mock = makeHappyFetch({
+    action: 'rsvp_resolve',
+    writerData: resolveData,
+    onWriter: async (envelope) => {
+      const payload = decodePayload(envelope);
+      assert.deepEqual(Object.keys(payload.data), ['accessCodeHash']);
+      assert.equal(
+        payload.data.accessCodeHash,
+        await hmacBase64Url(
+          ACCESS_HASH_SECRET,
+          `rsvp-access-code-v1\0${NORMALIZED_SHORT_ACCESS_CODE}`,
+        ),
+      );
+      assert.equal(JSON.stringify(payload).toLowerCase().includes(RAW_SHORT_ACCESS_CODE), false);
+      assert.equal(JSON.stringify(payload).includes(NORMALIZED_SHORT_ACCESS_CODE), false);
+    },
+  });
+  const response = await handleRequest(
+    makeRequest('/v1/households/resolve', {
+      accessCode: RAW_SHORT_ACCESS_CODE,
+      turnstileToken: 'turnstile-token',
+    }),
+    baseEnv,
+    makeDependencies(mock.fetch),
+  );
+
+  assert.equal(response.status, 200);
+  assert.deepEqual((await parseJson(response)).data, resolveData);
+});
+
 test('access codes fail closed when disabled and requests require exactly one credential', async () => {
   let calls = 0;
   const disabled = await handleRequest(
@@ -325,6 +358,10 @@ test('access codes fail closed when disabled and requests require exactly one cr
   for (const body of [
     { turnstileToken: 'turnstile-token' },
     { inviteToken: RAW_TOKEN, accessCode: RAW_ACCESS_CODE, turnstileToken: 'turnstile-token' },
+    { accessCode: '2A3-BC', turnstileToken: 'turnstile-token' },
+    { accessCode: '2A3-BC45', turnstileToken: 'turnstile-token' },
+    { accessCode: NORMALIZED_ACCESS_CODE.slice(0, 19), turnstileToken: 'turnstile-token' },
+    { accessCode: `${NORMALIZED_ACCESS_CODE}Q`, turnstileToken: 'turnstile-token' },
     { accessCode: '2A3BC-4D5EF-6G7HI-8KMNP', turnstileToken: 'turnstile-token' },
   ]) {
     const response = await handleRequest(
@@ -456,6 +493,39 @@ test('submit accepts an access code and can omit a meal for writer-enforced even
         await hmacBase64Url(ACCESS_HASH_SECRET, `rsvp-access-code-v1\0${NORMALIZED_ACCESS_CODE}`),
       );
       assert.equal(Object.hasOwn(payload.data.guests[0], 'mealChoice'), false);
+    },
+  });
+  const response = await handleRequest(
+    makeRequest('/v1/rsvps/submit', accessSubmit),
+    baseEnv,
+    makeDependencies(mock.fetch),
+  );
+  assert.equal(response.status, 200);
+  assert.deepEqual((await parseJson(response)).data, submitData);
+});
+
+test('submit accepts a new six-character access code through the same safe hash path', async () => {
+  const { inviteToken: _inviteToken, ...withoutInviteToken } = submitBody;
+  const accessSubmit = {
+    ...withoutInviteToken,
+    accessCode: RAW_SHORT_ACCESS_CODE,
+  };
+  const mock = makeHappyFetch({
+    action: 'rsvp_submit',
+    writerData: submitData,
+    onWriter: async (envelope) => {
+      const payload = decodePayload(envelope);
+      assert.equal(payload.data.tokenHash, undefined);
+      assert.equal(payload.data.accessCode, undefined);
+      assert.equal(
+        payload.data.accessCodeHash,
+        await hmacBase64Url(
+          ACCESS_HASH_SECRET,
+          `rsvp-access-code-v1\0${NORMALIZED_SHORT_ACCESS_CODE}`,
+        ),
+      );
+      assert.equal(JSON.stringify(payload).toLowerCase().includes(RAW_SHORT_ACCESS_CODE), false);
+      assert.equal(JSON.stringify(payload).includes(NORMALIZED_SHORT_ACCESS_CODE), false);
     },
   });
   const response = await handleRequest(

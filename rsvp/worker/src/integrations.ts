@@ -31,7 +31,9 @@ const RECEIPT_NUMBER_PATTERN = /^RSVP-[A-Z0-9]{6,20}$/;
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/u;
 const UNSAFE_CONTROL_PATTERN = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/u;
 const RANDOM_SECRET_PATTERN = /^[A-Za-z0-9_-]{64}$/;
-const ACCESS_CODE_PATTERN = new RegExp(`^[${ACCESS_CODE_ALPHABET}]{${LIMITS.accessCodeLength}}$`);
+const ACCESS_CODE_PATTERN = new RegExp(
+  `^(?:[${ACCESS_CODE_ALPHABET}]{${LIMITS.accessCodeLength}}|[${ACCESS_CODE_ALPHABET}]{${LIMITS.legacyAccessCodeLength}})$`,
+);
 const CLIENT_IP_PATTERN = /^[0-9A-Fa-f:.]{2,64}$/;
 const ACCESS_CODE_HASH_DOMAIN = 'rsvp-access-code-v1\0';
 const CLIENT_RATE_LIMIT_HASH_DOMAIN = 'rsvp-client-ip-v1\0';

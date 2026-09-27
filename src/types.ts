@@ -139,7 +139,6 @@ export interface SiteContent {
   };
   dressCode: {
     sectionId: string;
-    eyebrow: string;
     heading: string;
     introduction: string;
     inspirationLabel: string;

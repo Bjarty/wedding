@@ -13,7 +13,9 @@ export type ParseResult<T> = { ok: true; value: T } | { ok: false; issues: Field
 
 const INVITE_TOKEN_PATTERN = /^[A-Za-z0-9_-]+$/;
 const ACCESS_CODE_INPUT_PATTERN = /^[A-Za-z0-9 -]+$/;
-const ACCESS_CODE_PATTERN = new RegExp(`^[${ACCESS_CODE_ALPHABET}]{${LIMITS.accessCodeLength}}$`);
+const ACCESS_CODE_PATTERN = new RegExp(
+  `^(?:[${ACCESS_CODE_ALPHABET}]{${LIMITS.accessCodeLength}}|[${ACCESS_CODE_ALPHABET}]{${LIMITS.legacyAccessCodeLength}})$`,
+);
 const OPAQUE_ID_PATTERN = /^[A-Za-z0-9_-]+$/;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/u;

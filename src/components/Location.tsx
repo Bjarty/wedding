@@ -14,8 +14,8 @@ export default function Location() {
   const content = siteContent.location;
 
   return (
-    <section id={content.sectionId} className="scroll-mt-24 py-32 bg-stone-dark text-cream relative overflow-hidden">
-      <div className="absolute top-0 right-0 w-1/3 h-full bg-[radial-gradient(circle_at_top_right,_var(--color-gold)_0%,_transparent_70%)] opacity-10" />
+    <section id={content.sectionId} className="relative scroll-mt-24 overflow-hidden bg-[#33382F] py-28 text-cream sm:py-32">
+      <div className="absolute right-0 top-0 h-full w-1/2 bg-[radial-gradient(circle_at_top_right,_var(--color-sage)_0%,_transparent_68%)] opacity-10" />
       
       <div className="max-w-7xl mx-auto px-6 grid md:grid-cols-2 gap-20 items-center">
         <motion.a
@@ -26,10 +26,10 @@ export default function Location() {
            initial={{ opacity: 0, scale: 0.9 }}
            whileInView={{ opacity: 1, scale: 1 }}
            viewport={{ once: true }}
-           className="mesh-gradient group relative flex min-h-[28rem] items-center justify-center overflow-hidden rounded-3xl border border-cream/10 text-stone-dark shadow-2xl outline-none focus-visible:ring-4 focus-visible:ring-gold/60 md:aspect-square md:min-h-0"
+           className="mesh-gradient group relative flex min-h-[28rem] items-center justify-center overflow-hidden rounded-3xl border border-cream/10 text-stone-dark shadow-2xl outline-none focus-visible:ring-2 focus-visible:ring-sage focus-visible:ring-offset-4 focus-visible:ring-offset-[#33382F] md:aspect-square md:min-h-0"
         >
           <div className="max-w-sm px-8 text-center">
-            <MapIcon aria-hidden="true" className="mx-auto mb-6 h-16 w-16 text-gold transition-transform duration-500 group-hover:scale-110" />
+            <MapIcon aria-hidden="true" className="mx-auto mb-6 h-16 w-16 text-olive transition-transform duration-500 group-hover:scale-110" />
             <h3 className="text-5xl font-serif">{content.venueName}</h3>
             <p className="mt-2 text-sm font-bold uppercase tracking-[0.2em] text-taupe">
               {content.venueContext}
@@ -37,7 +37,7 @@ export default function Location() {
             <address className="mt-6 font-accent text-2xl italic">
               {content.address}
             </address>
-            <span className="mt-8 inline-flex items-center gap-2 rounded-full bg-stone-dark px-6 py-3 text-xs font-bold uppercase tracking-[0.2em] text-cream transition-colors group-hover:bg-gold">
+            <span className="mt-8 inline-flex items-center gap-2 rounded-full bg-stone-dark px-6 py-3 text-xs font-bold uppercase tracking-[0.2em] text-cream transition-colors group-hover:bg-jade">
               {content.mapLabel}
               <Navigation aria-hidden="true" className="h-4 w-4" />
             </span>
@@ -45,7 +45,8 @@ export default function Location() {
         </motion.a>
 
         <div>
-          <h2 className="text-6xl font-serif mb-8 text-gold italic">{content.heading}</h2>
+          <div className="mb-7 h-px w-16 bg-gold-soft/80" aria-hidden="true" />
+          <h2 className="mb-8 font-serif text-5xl text-paper sm:text-6xl">{content.heading}</h2>
           <p className="text-lg opacity-70 mb-12 font-sans leading-relaxed">
             {content.introduction}
           </p>
@@ -57,9 +58,9 @@ export default function Location() {
               return (
                 <div
                   key={option.id}
-                  className="card-glass group rounded-3xl border border-white/10 p-8 transition-all hover:border-gold/50"
+                  className="card-glass group rounded-3xl border border-white/10 p-8 transition-colors hover:border-sage/40"
                 >
-                  <Icon className="w-10 h-10 text-gold mb-6 group-hover:scale-110 transition-transform" />
+                  <Icon className="mb-6 h-10 w-10 text-olive transition-transform group-hover:scale-105" />
                   <h4 className="mb-3 font-serif text-2xl italic text-stone-dark">
                     {option.title}
                   </h4>

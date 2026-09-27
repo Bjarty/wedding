@@ -7,13 +7,13 @@ export default function Footer() {
   return (
     <footer className="py-20 bg-cream border-t border-stone-dark/5 text-center">
       <div className="max-w-7xl mx-auto px-6">
-        <Heart className="w-8 h-8 text-gold mx-auto mb-8 animate-pulse" />
+        <Heart className="mx-auto mb-8 h-8 w-8 fill-olive/10 text-olive" />
         
         <h2 className="text-4xl font-serif mb-12">{footer.coupleLabel}</h2>
         
         <div className="flex justify-center gap-12 mb-12">
-          <a href={`mailto:${contacts.generalEmail}`} className="flex flex-col items-center gap-2 group">
-            <div className="w-12 h-12 rounded-full border border-stone-dark/10 flex items-center justify-center group-hover:bg-gold group-hover:border-gold transition-all">
+          <a href={`mailto:${contacts.generalEmail}`} className="group flex flex-col items-center gap-2 rounded-2xl outline-none focus-visible:ring-2 focus-visible:ring-jade focus-visible:ring-offset-4 focus-visible:ring-offset-cream">
+            <div className="flex h-12 w-12 items-center justify-center rounded-full border border-olive/20 transition-all group-hover:border-jade group-hover:bg-jade">
               <Mail className="w-5 h-5 group-hover:text-white transition-colors" />
             </div>
             <span className="text-[10px] uppercase tracking-widest font-bold opacity-40">{footer.contactLabel}</span>
@@ -28,7 +28,7 @@ export default function Footer() {
           {footer.links.length > 0 && (
             <div className="flex gap-6">
               {footer.links.map((link) => (
-                <a key={link.id} href={link.href} className="hover:text-gold transition-colors">{link.label}</a>
+                <a key={link.id} href={link.href} className="rounded outline-none transition-colors hover:text-jade focus-visible:ring-2 focus-visible:ring-jade">{link.label}</a>
               ))}
             </div>
           )}

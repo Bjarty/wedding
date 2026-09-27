@@ -16,7 +16,7 @@ export default function Schedule() {
   const { schedule } = siteContent;
 
   return (
-    <section id={schedule.sectionId} className="scroll-mt-24 py-32 bg-cream">
+    <section id={schedule.sectionId} className="paper-surface scroll-mt-24 py-28 sm:py-32">
       <div className="max-w-5xl mx-auto px-6">
         <div className="text-center mb-24">
           <motion.h2 
@@ -26,7 +26,7 @@ export default function Schedule() {
           >
             {schedule.heading}
           </motion.h2>
-          <div className="h-px w-24 bg-gold mx-auto mb-6" />
+          <div className="mx-auto mb-6 h-px w-20 bg-gold/75" />
           <p className="font-accent italic text-2xl text-taupe">{schedule.dateLine}</p>
         </div>
 
@@ -44,22 +44,22 @@ export default function Schedule() {
                 className="flex flex-col md:flex-row gap-8 items-center md:items-start group"
               >
                 <div className="w-full md:w-32 flex flex-col items-center md:items-end justify-center">
-                  <span className="text-3xl font-serif text-gold">{event.time}</span>
+                  <span className="font-serif text-3xl text-olive">{event.time}</span>
                   <EventIcon className="w-5 h-5 text-taupe mt-2 group-hover:scale-125 transition-transform" />
                 </div>
 
-                <div className="hidden md:block w-px self-stretch bg-stone-dark/10 relative">
-                  <div className="absolute top-4 left-1/2 -translate-x-1/2 w-3 h-3 rounded-full bg-cream border-2 border-gold group-hover:bg-gold transition-colors" />
+                <div className="relative hidden w-px self-stretch bg-olive/20 md:block">
+                  <div className="absolute left-1/2 top-4 h-3 w-3 -translate-x-1/2 rounded-full border-2 border-olive bg-cream transition-colors group-hover:bg-olive" />
                 </div>
 
-                <div className="flex-1 card-glass p-10 md:p-12 rounded-[2rem] shadow-2xl group-hover:-translate-y-2 transition-all duration-500">
+                <div className="card-glass flex-1 rounded-[2rem] p-8 transition-colors duration-300 group-hover:border-olive/35 md:p-10">
                   <div className="flex justify-between items-start mb-4">
                     <h3 className="text-3xl font-serif italic text-stone-dark">{event.title}</h3>
-                    <div className="bg-gold/10 p-2 rounded-xl">
-                      <EventIcon className="w-5 h-5 text-gold group-hover:rotate-12 transition-transform" />
+                    <div className="rounded-xl bg-olive/10 p-2">
+                      <EventIcon className="h-5 w-5 text-olive" />
                     </div>
                   </div>
-                  <div className="flex items-center gap-2 text-gold text-xs uppercase tracking-[0.25em] font-bold mb-6">
+                  <div className="mb-6 flex items-center gap-2 text-xs font-bold uppercase tracking-[0.25em] text-bronze">
                     <MapPin className="w-4 h-4" />
                     {event.location}
                   </div>

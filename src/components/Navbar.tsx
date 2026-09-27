@@ -12,7 +12,7 @@ export default function Navbar() {
   const backgroundColor = useTransform(
     scrollY,
     [0, 100],
-    ['rgba(250, 250, 249, 0)', 'rgba(250, 250, 249, 0.8)']
+    ['rgba(245, 239, 229, 0)', 'rgba(245, 239, 229, 0.9)']
   );
 
   const backdropBlur = useTransform(
@@ -51,7 +51,7 @@ export default function Navbar() {
           className="flex items-center gap-2"
           whileHover={{ scale: 1.05 }}
         >
-          <Heart className="w-5 h-5 text-gold fill-gold" />
+          <Heart className="h-5 w-5 fill-olive/10 text-olive" />
           <span className="font-serif text-xl tracking-widest uppercase">{navigation.monogram}</span>
         </motion.div>
 
@@ -60,11 +60,11 @@ export default function Navbar() {
             <motion.a
               key={item.id}
               href={item.href}
-              className="text-[10px] uppercase tracking-[0.3em] font-bold text-stone-dark/60 hover:text-gold transition-colors relative group"
+              className="group relative text-[10px] font-bold uppercase tracking-[0.3em] text-stone-dark/60 outline-none transition-colors hover:text-jade focus-visible:text-jade focus-visible:ring-2 focus-visible:ring-jade focus-visible:ring-offset-4 focus-visible:ring-offset-cream"
               whileHover={{ y: -1 }}
             >
               {item.label}
-              <span className="absolute -bottom-1 left-0 w-0 h-px bg-gold transition-all group-hover:w-full" />
+              <span className="absolute -bottom-1 left-0 h-px w-0 bg-olive transition-all group-hover:w-full" />
             </motion.a>
           ))}
         </div>
@@ -76,7 +76,7 @@ export default function Navbar() {
             aria-expanded={isMenuOpen}
             aria-controls="mobile-navigation"
             onClick={() => setIsMenuOpen((isOpen) => !isOpen)}
-            className="flex h-11 w-11 items-center justify-center rounded-full border border-stone-dark/10 bg-cream/80 text-stone-dark shadow-sm outline-none transition-colors hover:text-gold focus-visible:ring-4 focus-visible:ring-gold/30 lg:hidden"
+            className="flex h-11 w-11 items-center justify-center rounded-full border border-olive/20 bg-paper/85 text-stone-dark shadow-sm outline-none transition-colors hover:text-jade focus-visible:ring-2 focus-visible:ring-jade focus-visible:ring-offset-2 focus-visible:ring-offset-cream lg:hidden"
           >
             {isMenuOpen
               ? <X aria-hidden="true" className="h-5 w-5" />
@@ -86,7 +86,7 @@ export default function Navbar() {
           <motion.a
             href={navigation.ctaHref}
             onClick={() => setIsMenuOpen(false)}
-            className="bg-stone-dark text-cream px-6 lg:px-10 py-3.5 rounded-full text-[10px] uppercase tracking-[0.3em] font-bold hover:bg-gold transition-all shadow-xl active:scale-95 border border-gold/20"
+            className="rounded-full border border-olive/30 bg-stone-dark px-6 py-3.5 text-[10px] font-bold uppercase tracking-[0.3em] text-cream shadow-lg outline-none transition-all hover:bg-jade focus-visible:ring-2 focus-visible:ring-jade focus-visible:ring-offset-2 focus-visible:ring-offset-cream active:scale-95 lg:px-10"
             whileHover={{ scale: 1.05 }}
           >
             {navigation.ctaLabel}
@@ -99,14 +99,14 @@ export default function Navbar() {
           id="mobile-navigation"
           initial={{ opacity: 0, y: -8 }}
           animate={{ opacity: 1, y: 0 }}
-          className="absolute left-6 right-6 top-full mt-2 max-h-[calc(100vh-7rem)] overflow-y-auto overscroll-contain rounded-3xl border border-stone-dark/10 bg-cream/95 p-3 shadow-2xl backdrop-blur-xl lg:hidden"
+          className="absolute left-6 right-6 top-full mt-2 max-h-[calc(100vh-7rem)] overflow-y-auto overscroll-contain rounded-3xl border border-olive/15 bg-paper/95 p-3 shadow-2xl backdrop-blur-xl lg:hidden"
         >
           {navigation.items.map((item) => (
             <a
               key={item.id}
               href={item.href}
               onClick={() => setIsMenuOpen(false)}
-              className="block rounded-2xl px-5 py-4 text-xs font-bold uppercase tracking-[0.2em] text-stone-dark/70 outline-none transition-colors hover:bg-gold/10 hover:text-gold focus-visible:bg-gold/10 focus-visible:text-gold"
+              className="block rounded-2xl px-5 py-4 text-xs font-bold uppercase tracking-[0.2em] text-stone-dark/70 outline-none transition-colors hover:bg-jade/10 hover:text-jade focus-visible:bg-jade/10 focus-visible:text-jade focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-jade"
             >
               {item.label}
             </a>

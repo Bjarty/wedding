@@ -1,32 +1,25 @@
 import { motion } from 'motion/react';
 import { siteContent } from '../content/siteContent';
+import LanternWatermark from './decorations/LanternWatermark';
 
 export default function Hero() {
   const { hero } = siteContent;
 
   return (
-    <section className="relative h-screen w-full flex items-center justify-center overflow-hidden mesh-gradient">
-      <div className="absolute inset-0 z-0">
-        <motion.div
-          animate={{
-            scale: [1, 1.1, 1],
-            rotate: [0, 5, 0],
-          }}
-          transition={{
-            duration: 20,
-            repeat: Infinity,
-            ease: "linear"
-          }}
-          className="w-full h-full opacity-20 bg-[radial-gradient(circle_at_center,_var(--color-gold)_0%,_transparent_70%)]"
-        />
-      </div>
+    <section className="paper-surface relative flex min-h-screen w-full items-center justify-center overflow-hidden">
+      <LanternWatermark className="-left-12 -top-10 w-44 opacity-80 sm:left-3 sm:w-56 lg:w-64" />
+      <LanternWatermark className="-right-12 top-16 w-36 opacity-60 sm:right-5 sm:w-48 lg:w-56" />
+      <div
+        className="absolute inset-x-0 bottom-0 h-1/3 bg-gradient-to-t from-olive/[0.07] to-transparent"
+        aria-hidden="true"
+      />
 
-      <div className="relative z-10 text-center px-4">
+      <div className="relative z-10 mx-auto max-w-7xl px-6 text-center">
         <motion.p
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.8, delay: 0.5 }}
-          className="font-accent italic text-3xl md:text-4xl text-taupe mb-8 drop-shadow-sm"
+          className="mb-10 text-xs font-semibold uppercase tracking-[0.42em] text-stone-dark/70 sm:text-sm"
         >
           {hero.eyebrow}
         </motion.p>
@@ -35,10 +28,10 @@ export default function Hero() {
           initial={{ opacity: 0, scale: 0.95 }}
           animate={{ opacity: 1, scale: 1 }}
           transition={{ duration: 1.2, ease: [0.16, 1, 0.3, 1] }}
-          className="text-7xl md:text-9xl lg:text-[13rem] font-serif tracking-tighter leading-none mb-10 text-stone-dark"
+          className="mb-12 font-serif text-6xl leading-[0.95] tracking-[-0.045em] text-stone-dark sm:text-7xl md:text-8xl lg:text-[8.5rem]"
         >
-          {hero.firstName} <span className="text-gold italic text-glow">&</span> <br />
-          {hero.secondName}
+          {hero.firstName} <span className="font-accent font-normal italic text-olive">&</span>{' '}
+          <span className="whitespace-nowrap">{hero.secondName}</span>
         </motion.h1>
 
         <motion.div
@@ -47,21 +40,21 @@ export default function Hero() {
           transition={{ duration: 1, delay: 1.2 }}
           className="flex flex-col items-center gap-4"
         >
-          <div className="h-px w-24 bg-gold mb-4" />
-          <p className="uppercase tracking-[0.4em] text-sm md:text-base font-bold">
+          <div className="mb-4 h-px w-20 bg-gold/80" />
+          <p className="font-accent text-2xl italic tracking-[0.04em] text-stone-dark/75 sm:text-3xl">
             {hero.dateLine}
           </p>
-          <div className="h-px w-24 bg-gold mt-4" />
+          <div className="mt-4 h-px w-20 bg-gold/80" />
         </motion.div>
       </div>
 
       <motion.div 
-        className="absolute bottom-10 left-1/2 -translate-x-1/2 flex flex-col items-center gap-2 opacity-50"
+        className="absolute bottom-8 left-1/2 flex -translate-x-1/2 flex-col items-center gap-2 text-stone-dark/45"
         animate={{ y: [0, 10, 0] }}
         transition={{ duration: 2, repeat: Infinity }}
       >
         <span className="text-[10px] uppercase tracking-widest font-bold">{hero.scrollLabel}</span>
-        <div className="w-[1px] h-12 bg-stone-dark" />
+        <div className="h-10 w-px bg-olive/60" />
       </motion.div>
     </section>
   );

@@ -32,10 +32,13 @@ tokenHash = base64url(HMAC-SHA256(INVITATION_TOKEN_HASH_SECRET, UTF-8 inviteToke
 The same algorithm and secret must be used by the offline invitation
 provisioning process. `Invitations` stores `tokenHash`, never the raw token.
 
-The recommended shared-QR flow accepts a 20-character household code from the
-alphabet `23456789ABCDEFGHJKMNPQRSTVWXYZ`. Input is case-insensitive; ASCII
-spaces and hyphens are removed. Before calling Apps Script, the Worker
-calculates:
+The recommended shared-QR flow uses a six-character household code from the
+alphabet `23456789ABCDEFGHJKMNPQRSTVWXYZ`, displayed as `XXX-XXX`. During the
+transition, the Worker also accepts previously issued 20-character codes
+exactly; no intermediate lengths are valid. Input is case-insensitive; ASCII
+spaces and hyphens are removed. Both formats use the same hash domain and
+secret, so existing Sheet hashes remain valid. Before calling Apps Script, the
+Worker calculates:
 
 ```text
 accessCodeHash = base64url(HMAC-SHA256(

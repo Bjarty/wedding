@@ -7,6 +7,7 @@ import test from 'node:test';
 
 import {
   ACCESS_CODE_ALPHABET,
+  LEGACY_PUBLIC_DEMO_ACCESS_CODE,
   PUBLIC_DEMO_ACCESS_CODE,
   createHouseholdProvisioning,
   formatAccessCode,
@@ -18,7 +19,7 @@ import {
 const ACCESS_SECRET = 'abcdefghijklmnopqrstuvwxyz0123456789_-ABCDEFGHIJKLMNOPQRSTUVWXYZ';
 const FIXED_DATE = new Date('2026-08-29T12:00:00.000Z');
 
-test('generator creates a formatted 20-character code from the approved alphabet', () => {
+test('generator creates a formatted six-character code from the approved alphabet', () => {
   let counter = 0;
   const code = generateAccessCode((maximum) => {
     assert.equal(maximum, ACCESS_CODE_ALPHABET.length);
@@ -26,13 +27,13 @@ test('generator creates a formatted 20-character code from the approved alphabet
     counter += 1;
     return selected;
   });
-  assert.equal(code.length, 20);
-  assert.match(code, new RegExp(`^[${ACCESS_CODE_ALPHABET}]{20}$`));
-  assert.match(formatAccessCode(code), /^[A-Z0-9]{5}(?:-[A-Z0-9]{5}){3}$/);
+  assert.equal(code.length, 6);
+  assert.match(code, new RegExp(`^[${ACCESS_CODE_ALPHABET}]{6}$`));
+  assert.match(formatAccessCode(code), /^[A-Z0-9]{3}-[A-Z0-9]{3}$/);
 });
 
-test('provisioning uses the same domain-separated hash and refuses the public demo code', () => {
-  const accessCode = '2A3BC4D5EF6G7HJ8KMNP';
+test('provisioning uses the same domain-separated hash and preserves legacy-code compatibility', () => {
+  const accessCode = '2A3BC4';
   const provisioning = createHouseholdProvisioning({
     householdId: 'hh_garcia_test',
     displayName: 'Familie Garcia',
@@ -51,25 +52,35 @@ test('provisioning uses the same domain-separated hash and refuses the public de
   assert.equal(provisioning.sheetRecord.mealChoiceRequired, true);
   assert.equal(provisioning.sheetRecord.currentRevision, 0);
   assert.equal(JSON.stringify(provisioning.sheetRecord).includes(accessCode), false);
-  assert.equal(provisioning.deliveryRecord.accessCode, '2A3BC-4D5EF-6G7HJ-8KMNP');
+  assert.equal(provisioning.deliveryRecord.accessCode, '2A3-BC4');
   assert.equal(provisioning.deliveryRecord.sharedRsvpUrl, 'https://lisetteenbjarty.nl/#rsvp');
 
-  assert.throws(
-    () => hashAccessCode(PUBLIC_DEMO_ACCESS_CODE, ACCESS_SECRET),
-    /public demo access code/,
+  const legacyCode = '2A3BC4D5EF6G7HJ8KMNP';
+  assert.equal(formatAccessCode(legacyCode), '2A3BC-4D5EF-6G7HJ-8KMNP');
+  assert.equal(
+    hashAccessCode(legacyCode, ACCESS_SECRET),
+    createHmac('sha256', ACCESS_SECRET)
+      .update(`rsvp-access-code-v1\0${legacyCode}`, 'utf8')
+      .digest('base64url'),
   );
-  assert.throws(
-    () => createHouseholdProvisioning({
-      householdId: 'hh_demo_forbidden',
-      displayName: 'Niet opslaan',
-      invitationVariant: 'evening',
-      maxGuests: 1,
-      secret: ACCESS_SECRET,
-      accessCode: PUBLIC_DEMO_ACCESS_CODE,
-      now: () => FIXED_DATE,
-    }),
-    /public demo access code/,
-  );
+  for (const demoCode of [PUBLIC_DEMO_ACCESS_CODE, LEGACY_PUBLIC_DEMO_ACCESS_CODE]) {
+    assert.throws(
+      () => hashAccessCode(demoCode, ACCESS_SECRET),
+      /public demo access code/,
+    );
+    assert.throws(
+      () => createHouseholdProvisioning({
+        householdId: 'hh_demo_forbidden',
+        displayName: 'Niet opslaan',
+        invitationVariant: 'evening',
+        maxGuests: 1,
+        secret: ACCESS_SECRET,
+        accessCode: demoCode,
+        now: () => FIXED_DATE,
+      }),
+      /public demo access code/,
+    );
+  }
   assert.throws(
     () => createHouseholdProvisioning({
       householdId: 'hh_formula_forbidden',
@@ -77,7 +88,7 @@ test('provisioning uses the same domain-separated hash and refuses the public de
       invitationVariant: 'day',
       maxGuests: 1,
       secret: ACCESS_SECRET,
-      accessCode: '2A3BC4D5EF6G7HJ8KMNP',
+      accessCode: '2A3BC4',
       now: () => FIXED_DATE,
     }),
     /safe characters/,
@@ -98,16 +109,16 @@ test('sheet and private delivery outputs are outside the repository and never ov
     invitationVariant: 'evening',
     maxGuests: 3,
     secret: ACCESS_SECRET,
-    accessCode: '2A3BC4D5EF6G7HJ8KMNP',
+    accessCode: '2A3BC4',
     now: () => FIXED_DATE,
   });
 
   await writeProvisioningFiles({ sheetOut, deliveryOut, provisioning });
   const sheetSource = await readFile(sheetOut, 'utf8');
   const deliverySource = await readFile(deliveryOut, 'utf8');
-  assert.equal(sheetSource.includes('2A3BC'), false);
+  assert.equal(sheetSource.includes('2A3BC4'), false);
   assert.equal(JSON.parse(sheetSource).mealChoiceRequired, false);
-  assert.equal(JSON.parse(deliverySource).accessCode, '2A3BC-4D5EF-6G7HJ-8KMNP');
+  assert.equal(JSON.parse(deliverySource).accessCode, '2A3-BC4');
 
   await assert.rejects(
     writeProvisioningFiles({ sheetOut, deliveryOut, provisioning }),

@@ -23,7 +23,7 @@ export default function App() {
     <div className="relative min-h-screen">
       {/* Progress Bar */}
       <motion.div
-        className="fixed top-0 left-0 right-0 h-1 bg-gold z-[100] origin-left"
+        className="fixed top-0 left-0 right-0 h-1 bg-olive z-[100] origin-left"
         style={{ scaleX }}
       />
 

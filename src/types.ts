@@ -196,6 +196,12 @@ export interface SiteContent {
     statusHeading: string;
     statusMessage: string;
     contactLabel: string;
+    localPreview: {
+      heading: string;
+      message: string;
+      linkLabel: string;
+      href: string;
+    };
     codeEntry: {
       eyebrow: string;
       heading: string;

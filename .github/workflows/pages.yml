@@ -45,7 +45,7 @@ jobs:
         run: npm run build
         env:
           # Public values only. The form requires enabled=true plus both
-          # values; otherwise the coming-soon message remains rendered.
+          # values; otherwise a temporary-unavailability message is rendered.
           # The production mail route is active and verified. Keep this value
           # explicit in the reviewed deployment workflow so a stale repository
           # variable cannot make the live RSVP copy untruthful.

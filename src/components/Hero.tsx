@@ -7,8 +7,8 @@ export default function Hero() {
 
   return (
     <section className="paper-surface relative flex min-h-screen w-full items-center justify-center overflow-hidden">
-      <LanternWatermark className="-left-12 -top-10 w-44 opacity-80 sm:left-3 sm:w-56 lg:w-64" />
-      <LanternWatermark className="-right-12 top-16 w-36 opacity-60 sm:right-5 sm:w-48 lg:w-56" />
+      <LanternWatermark className="-left-12 -top-10 w-44 opacity-30 sm:left-3 sm:w-56 lg:w-64" />
+      <LanternWatermark className="-right-12 top-16 w-36 opacity-25 sm:right-5 sm:w-48 lg:w-56" />
       <div
         className="absolute inset-x-0 bottom-0 h-1/3 bg-gradient-to-t from-olive/[0.07] to-transparent"
         aria-hidden="true"

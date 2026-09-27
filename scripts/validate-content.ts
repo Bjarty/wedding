@@ -263,7 +263,7 @@ if (siteContent.event.rsvpDeadline.iso >= siteContent.event.date.iso) {
 }
 
 const rsvpDeadlinePhrase = `tot en met ${siteContent.event.rsvpDeadline.display}`;
-const accessRoutePhrase = 'huishoudcode of persoonlijke uitnodigingslink';
+const accessRoutePhrase = 'persoonlijke code of persoonlijke uitnodigingslink';
 const confirmationCopy = siteContent.rsvp;
 
 if (confirmationCopy.states.receiptLabel !== 'Bevestigingsnummer') {

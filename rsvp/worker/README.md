@@ -25,10 +25,21 @@ not identity verification: anyone who can find a group can view and change
 that group's RSVP. Turnstile, result bounds and rate limits reduce automated
 abuse but do not make the guest list secret or prove who is responding.
 
-The guest directory stays in the private Sheet, never in Git or the static
-website bundle. Only matching group labels are returned, never contact
-details, answers or the entire directory. The writer is authoritative about
-active groups, day/evening policy, meal requirements and the complete guest set.
+The fixed guest list is deliberately public in `src/content/rsvpRoster.json`,
+Git and the website bundle. The browser searches this file locally and sends
+the selected `publicGroupId` on resolve/submit. Names are not secrets; the full
+list can be downloaded. Answers, contact details and messages are not in that
+file. The writer remains authoritative about active groups, day/evening policy,
+meal requirements and the complete guest set. Removing a group from the file
+does not revoke access: also disable its `NameDirectory.active` in the writer.
+
+`publicGroupId` is an opaque public ID of 1–64 ASCII letters, digits, `_` or `-`.
+It is mutually exclusive with all other credentials and requires the exact
+Worker flag `NAME_LOOKUP_ENABLED=true`. It maps to `nameHouseholdId` inside the
+signed writer envelope. Turnstile, client/global/group limits and writer access
+checks apply unchanged. It grants no identity verification or admin access.
+
+The older server-side search route is retained for compatibility:
 
 After search, the Worker issues a one-hour `nameTicket` for each result. It is
 a selection capability, not a login. Its format is
@@ -43,7 +54,7 @@ Rotation of that secret also invalidates outstanding name selections.
 Keep tickets in tab memory and JSON request bodies only, never URLs, local
 storage, logs or Sheet cells. The writer receives only `nameHouseholdId` in
 the existing signed envelope and rechecks the active directory entry on every
-request. The public API never accepts a raw household ID as a credential.
+request. Direct public selection and signed tickets use the same group rate key.
 Expired selections return `INVITATION_INVALID`; guests can search again.
 
 ## Credentials and hashes
@@ -76,8 +87,8 @@ accessCodeHash = base64url(HMAC-SHA256(
 ))
 ```
 
-Resolve and submit contain exactly one credential: `nameTicket` for name-first
-selection, `inviteToken` for a legacy fragment link or `accessCode` for the
+Resolve and submit contain exactly one credential: `publicGroupId` for the fixed
+list, `nameTicket` for older server search, `inviteToken` for a legacy fragment link or `accessCode` for the
 legacy shared QR. The writer receives exactly one corresponding
 `nameHouseholdId`, `tokenHash` or `accessCodeHash`. Legacy credentials remain
 supported during reviewed migration/rollback, without being shown in the new
@@ -130,7 +141,7 @@ no new rate-limit binding or secret is needed.
 
 Turnstile action: `rsvp_resolve`.
 
-Name-first requests send `nameTicket` in place of `accessCode` in the legacy
+Name-first requests send `publicGroupId` in place of `accessCode` in the legacy
 example below; all other request and response fields are unchanged.
 
 ```json
@@ -169,7 +180,7 @@ When a response already exists, `currentRsvp` contains `revision`, stable
 
 Turnstile action: `rsvp_submit`.
 
-Name-first requests likewise send `nameTicket` in place of `accessCode`.
+Name-first requests likewise send `publicGroupId` in place of `accessCode`.
 
 ```json
 {
@@ -398,10 +409,10 @@ blijven werken zolang hun huidige configuratie behouden blijft.
    opgehelderd. Controleer de exacte deploymentversie van de writer.
 3. Deploy de beoordeelde Worker met behoud van alle huidige secrets, origin,
    bindings en legacy-vlaggen. Zet daarna pas de naamlookup-flag aan in de writer
-   en Worker. De bestaande Turnstile-widget moet de nieuwe actie `rsvp_search`
-   accepteren; verruim de toegestane hostname niet.
+   en Worker. De vaste lijst gebruikt alleen de bestaande Turnstile-acties
+   `rsvp_resolve` en `rsvp_submit`; verruim de toegestane hostname niet.
 4. Controleer met een afgesproken synthetische groep zoeken, selecteren, eerste
-   inzending, opnieuw zoeken en wijzigen, verlopen selectie, intrekking,
+   inzending, opnieuw zoeken en wijzigen, intrekking,
    dag-/avondbeleid, foutafhandeling en mail. Zet pas daarna
    `VITE_RSVP_NAME_LOOKUP_ENABLED=true` voor de gereviewde Pages-build.
 5. Bij problemen: zet eerst de Worker- én writer-naamlookupvlag uit. Ook reeds

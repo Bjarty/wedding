@@ -268,6 +268,7 @@ export interface SiteContent {
       invalidLink: string;
       invalidCode: string;
       invalidNameSelection: string;
+      invalidPublicGroupSelection: string;
       nameRenewalHeading: string;
       nameRenewalMessage: string;
       nameRenewalWrongGroup: string;

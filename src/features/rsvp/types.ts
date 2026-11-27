@@ -6,6 +6,7 @@ export type InvitationVariant = 'day' | 'evening';
 export type RsvpCredential =
   | { type: 'inviteToken'; value: string }
   | { type: 'nameTicket'; value: string }
+  | { type: 'publicGroupId'; value: string }
   | { type: 'accessCode'; value: string };
 
 export interface NameSearchMatch {

@@ -1693,10 +1693,33 @@ const nameSubmitData = {
   nameHouseholdId: 'names_a', idempotencyKey: randomUUID(), revision: 0, attending: true,
   guests: [{ guestId: 'names_a_1', attending: true, mealChoice: 'vegan' }, { guestId: 'names_a_2', attending: false }],
 };
+// Public group selection still has to pass every writer-side identity/data guard.
+const nameGuardSnapshot = JSON.stringify([...spreadsheet.sheets].map(([name, sheet]) => [name, sheet.rows]));
+for (const unavailableGroup of ['names_unknown', 'names_pending']) {
+  assert.equal(post(makeEnvelope('resolve', { nameHouseholdId: unavailableGroup })).error.code, 'INVITATION_INVALID');
+  assert.equal(post(makeEnvelope('submit', {
+    ...nameSubmitData, nameHouseholdId: unavailableGroup, idempotencyKey: randomUUID(),
+  })).error.code, 'INVITATION_INVALID');
+}
+for (const extraCredential of [{ tokenHash }, { accessCodeHash }]) {
+  assert.equal(post(makeEnvelope('submit', {
+    ...nameSubmitData, ...extraCredential, idempotencyKey: randomUUID(),
+  })).error.code, 'INVITATION_INVALID');
+}
+assert.equal(post(makeEnvelope('submit', {
+  ...nameSubmitData, nameHouseholdId: 'names_b', idempotencyKey: randomUUID(),
+})).error.code, 'INVITATION_INVALID');
+assert.equal(JSON.stringify([...spreadsheet.sheets].map(([name, sheet]) => [name, sheet.rows])), nameGuardSnapshot);
 const nameSubmit = post(makeEnvelope('submit', nameSubmitData));
 assert.equal(nameSubmit.ok, true);
 assert.equal(nameSubmit.data.revision, 1);
 assert.deepEqual(post(makeEnvelope('submit', nameSubmitData)).data, nameSubmit.data);
+const crossGroupRetrySnapshot = JSON.stringify([...spreadsheet.sheets].map(([name, sheet]) => [name, sheet.rows]));
+assert.equal(post(makeEnvelope('submit', {
+  nameHouseholdId: 'names_b', idempotencyKey: nameSubmitData.idempotencyKey, revision: 0,
+  attending: true, guests: [{ guestId: 'names_b_1', attending: true }],
+})).error.code, 'IDEMPOTENCY_CONFLICT');
+assert.equal(JSON.stringify([...spreadsheet.sheets].map(([name, sheet]) => [name, sheet.rows])), crossGroupRetrySnapshot);
 const existingNameReply = post(makeEnvelope('resolve', { nameHouseholdId: 'names_a' }));
 assert.equal(existingNameReply.data.currentRsvp.guests[0].mealChoice, 'vegan');
 const updatedNameData = { ...nameSubmitData, idempotencyKey: randomUUID(), revision: 1,
@@ -1707,12 +1730,23 @@ assert.equal(updatedNameReply.data.revision, 2);
 assert.equal(updatedNameReply.data.receiptNumber, nameSubmit.data.receiptNumber);
 const nameDirectoryRow = rowsMatching('NameDirectory', 'householdId', 'names_a')[0].rowNumber;
 directorySheet.setCell(nameDirectoryRow, 4, false);
+const directoryRevocationSnapshot = JSON.stringify([...spreadsheet.sheets].map(([name, sheet]) => [name, sheet.rows]));
 assert.equal(post(makeEnvelope('resolve', { nameHouseholdId: 'names_a' })).error.code, 'INVITATION_INVALID');
 assert.equal(post(makeEnvelope('submit', updatedNameData)).error.code, 'INVITATION_INVALID');
+assert.equal(post(makeEnvelope('submit', {
+  ...updatedNameData, idempotencyKey: randomUUID(), revision: 2,
+})).error.code, 'INVITATION_INVALID');
+assert.equal(JSON.stringify([...spreadsheet.sheets].map(([name, sheet]) => [name, sheet.rows])), directoryRevocationSnapshot);
 directorySheet.setCell(nameDirectoryRow, 4, true);
 const nameInvitationRow = rowsMatching('Invitations', 'householdId', 'names_a')[0].rowNumber;
 invitationSheet.setCell(nameInvitationRow, 8, false);
+const invitationRevocationSnapshot = JSON.stringify([...spreadsheet.sheets].map(([name, sheet]) => [name, sheet.rows]));
+assert.equal(post(makeEnvelope('resolve', { nameHouseholdId: 'names_a' })).error.code, 'INVITATION_INVALID');
 assert.equal(post(makeEnvelope('submit', updatedNameData)).error.code, 'INVITATION_INVALID');
+assert.equal(post(makeEnvelope('submit', {
+  ...updatedNameData, idempotencyKey: randomUUID(), revision: 2,
+})).error.code, 'INVITATION_INVALID');
+assert.equal(JSON.stringify([...spreadsheet.sheets].map(([name, sheet]) => [name, sheet.rows])), invitationRevocationSnapshot);
 invitationSheet.setCell(nameInvitationRow, 8, true);
 properties.set('NAME_LOOKUP_ENABLED', 'false');
 assert.equal(post(makeEnvelope('submit', updatedNameData)).error.code, 'INVITATION_INVALID');

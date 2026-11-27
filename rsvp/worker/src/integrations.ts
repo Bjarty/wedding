@@ -434,6 +434,14 @@ export const hashCredential = async (
   env: Env,
   dependencies: RuntimeDependencies,
 ): Promise<CredentialHash> => {
+  if (typeof credential.publicGroupId === 'string') {
+    if (env.NAME_LOOKUP_ENABLED !== 'true') {
+      throw new PublicHttpError(404, 'INVITATION_INVALID');
+    }
+    // A deliberately public group selection, not proof of identity. The signed
+    // writer request still requires an active NameDirectory entry and invitation.
+    return { nameHouseholdId: credential.publicGroupId };
+  }
   if (typeof credential.nameTicket === 'string') {
     return { nameHouseholdId: await readNameTicket(credential.nameTicket, env, dependencies) };
   }

@@ -49,10 +49,21 @@ const parseCredential = (
   const hasInviteToken = Object.hasOwn(record, 'inviteToken');
   const hasAccessCode = Object.hasOwn(record, 'accessCode');
   const hasNameTicket = Object.hasOwn(record, 'nameTicket');
-  const credentialCount = Number(hasInviteToken) + Number(hasAccessCode) + Number(hasNameTicket);
+  const hasPublicGroupId = Object.hasOwn(record, 'publicGroupId');
+  const credentialCount = Number(hasInviteToken) + Number(hasAccessCode) + Number(hasNameTicket) + Number(hasPublicGroupId);
   if (credentialCount !== 1) {
     issues.push({ path: 'credential', code: credentialCount > 1 ? 'inconsistent' : 'required' });
     return undefined;
+  }
+
+  if (hasPublicGroupId) {
+    const publicGroupId = requiredString(
+      record,
+      'publicGroupId',
+      { min: 1, max: LIMITS.idMax, pattern: OPAQUE_ID_PATTERN },
+      issues,
+    );
+    return publicGroupId === undefined ? undefined : { publicGroupId };
   }
 
   if (hasNameTicket) {
@@ -229,7 +240,7 @@ export const parseResolveRequest = (value: unknown): ParseResult<ResolveRequest>
   }
 
   const issues: FieldIssue[] = [];
-  addUnknownFieldIssue(value, new Set(['inviteToken', 'accessCode', 'nameTicket', 'turnstileToken']), 'body', issues);
+  addUnknownFieldIssue(value, new Set(['inviteToken', 'accessCode', 'nameTicket', 'publicGroupId', 'turnstileToken']), 'body', issues);
   const credential = parseCredential(value, issues);
   const turnstileToken = requiredString(
     value,
@@ -256,6 +267,7 @@ export const parseSubmitRequest = (value: unknown): ParseResult<SubmitRequest> =
       'inviteToken',
       'accessCode',
       'nameTicket',
+      'publicGroupId',
       'idempotencyKey',
       'revision',
       'attending',

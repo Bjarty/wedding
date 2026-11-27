@@ -41,10 +41,12 @@ externe omgeving worden geprovisioned.
 
 De nieuwe naamgebaseerde instap laat gasten op voornaam of familienaam zoeken,
 hun groep kiezen en per persoon reageren, zonder zichtbare code of mailverificatie.
-De echte namen staan alleen in de private Sheet, nooit in de websitebundle of Git.
-De bronlijst en importbestanden blijven buiten Git (lokaal eventueel onder
-`.local/rsvp/`). Zie [naamzoeker en gastenbeheer](rsvp/NAME-LOOKUP.md) voor de
-bewuste privacykeuze, invoerformaat, reviewpunten en exact te beoordelen migratie.
+De vaste namenlijst staat in `src/content/rsvpRoster.json`. Deze lijst met namen,
+groepsindeling en dag-/avondtype is bewust openbaar in Git en de websitebundle.
+Antwoorden, e-mailadressen, berichten en credentials blijven privé. De zoekopdracht
+gebeurt lokaal; openen en opslaan gebruiken de bestaande productie-API.
+Zie [naamzoeker en gastenbeheer](rsvp/NAME-LOOKUP.md) voor aanpassen van de lijst,
+het synchroniseren van groepen met de private Sheet en productieactivering.
 Deze codewijziging activeert of deployt zelf geen externe diensten.
 
 Zonder lokale RSVP-configuratie toont de websitevoorvertoning **RSVP is

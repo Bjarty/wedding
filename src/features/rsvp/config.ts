@@ -2,6 +2,7 @@ export interface RsvpConfig {
   apiBaseUrl: string;
   turnstileSiteKey: string;
   householdCodesEnabled: boolean;
+  nameLookupEnabled: boolean;
   confirmationEmailEnabled: boolean;
 }
 
@@ -11,6 +12,7 @@ export interface RsvpEnvironment {
   readonly VITE_RSVP_API_BASE_URL?: string;
   readonly VITE_TURNSTILE_SITE_KEY?: string;
   readonly VITE_RSVP_HOUSEHOLD_CODES_ENABLED?: string;
+  readonly VITE_RSVP_NAME_LOOKUP_ENABLED?: string;
   readonly VITE_RSVP_CONFIRMATION_EMAIL_ENABLED?: string;
 }
 
@@ -50,6 +52,7 @@ export const parseRsvpConfig = (env: RsvpEnvironment | undefined): RsvpConfig | 
     apiBaseUrl,
     turnstileSiteKey,
     householdCodesEnabled: env.VITE_RSVP_HOUSEHOLD_CODES_ENABLED === 'true',
+    nameLookupEnabled: env.VITE_RSVP_NAME_LOOKUP_ENABLED === 'true',
     confirmationEmailEnabled: env.VITE_RSVP_CONFIRMATION_EMAIL_ENABLED === 'true',
   };
 };

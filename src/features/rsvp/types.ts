@@ -5,7 +5,18 @@ export type InvitationVariant = 'day' | 'evening';
 
 export type RsvpCredential =
   | { type: 'inviteToken'; value: string }
+  | { type: 'nameTicket'; value: string }
   | { type: 'accessCode'; value: string };
+
+export interface NameSearchMatch {
+  displayName: string;
+  nameTicket: string;
+}
+
+export interface NameSearchResult {
+  matches: NameSearchMatch[];
+  tooMany: boolean;
+}
 
 export interface GuestSubmission {
   guestId: string;

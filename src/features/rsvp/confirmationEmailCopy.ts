@@ -5,6 +5,7 @@ type RsvpContent = SiteContent['rsvp'];
 interface ConfirmationCopyOptions {
   confirmationEmailEnabled: boolean;
   demo: boolean;
+  nameLookup?: boolean;
 }
 
 interface ReceiptCopyOptions extends ConfirmationCopyOptions {
@@ -21,6 +22,11 @@ export const getEmailConfirmationNote = (
   options: ConfirmationCopyOptions,
 ): string => {
   if (options.demo) return rsvp.form.emailConfirmationDemoNote;
+  if (options.nameLookup) {
+    return canPromiseConfirmationEmail(options)
+      ? rsvp.form.emailConfirmationNameEnabledNote
+      : rsvp.form.emailConfirmationNameDisabledNote;
+  }
   return canPromiseConfirmationEmail(options)
     ? rsvp.form.emailConfirmationEnabledNote
     : rsvp.form.emailConfirmationDisabledNote;
@@ -31,9 +37,11 @@ export const getPrivacyMessage = (
   options: ConfirmationCopyOptions,
 ): string => {
   if (options.demo) return rsvp.form.demoPrivacyMessage;
-  return options.confirmationEmailEnabled
+  const message = options.confirmationEmailEnabled
     ? rsvp.form.privacyMessage
     : rsvp.form.privacyEmailDisabledMessage;
+  if (!options.nameLookup) return message;
+  return `${message} ${rsvp.form.namePrivacyMessage}`;
 };
 
 export const getReceiptHelperText = (
@@ -48,5 +56,5 @@ export const getReceiptHelperText = (
       : rsvp.states.receiptEmailEnabledHelper)
     : rsvp.states.receiptEmailDisabledHelper;
 
-  return `${emailMessage} ${rsvp.states.receiptAccessHelper}`;
+  return `${emailMessage} ${options.nameLookup ? rsvp.states.receiptNameAccessHelper : rsvp.states.receiptAccessHelper}`;
 };

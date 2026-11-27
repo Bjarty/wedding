@@ -8,6 +8,7 @@ import {
   type CredentialHash,
   type Env,
   type GuestSubmission,
+  type InvitationCredential,
   type MealChoice,
   type RateLimitBinding,
   type ResolveResult,
@@ -16,8 +17,10 @@ import {
   type WriterEnvelope,
   type WriterOperation,
   type WriterPayload,
+  type WriterSearchResult,
 } from './contract.js';
 import { PublicHttpError } from './errors.js';
+import { readNameTicket } from './nameTicket.js';
 import { isRecord } from './validation.js';
 
 const TURNSTILE_VERIFY_URL = 'https://challenges.cloudflare.com/turnstile/v0/siteverify';
@@ -265,6 +268,26 @@ const parseResolveResult = (value: unknown): ResolveResult | undefined => {
   };
 };
 
+const parseSearchResult = (value: unknown): WriterSearchResult | undefined => {
+  if (
+    !isRecord(value) || !hasOnlyKeys(value, ['matches', 'tooMany']) ||
+    !Array.isArray(value.matches) || value.matches.length > LIMITS.nameSearchMatchesMax ||
+    typeof value.tooMany !== 'boolean' || (value.tooMany && value.matches.length !== 0)
+  ) return undefined;
+  const matches: WriterSearchResult['matches'] = [];
+  for (const match of value.matches) {
+    if (
+      !isRecord(match) || !hasOnlyKeys(match, ['householdId', 'displayName']) ||
+      !boundedString(match.householdId, LIMITS.idMax, OPAQUE_ID_PATTERN) ||
+      !boundedString(match.displayName, LIMITS.displayNameMax) ||
+      match.displayName.trim() === '' || UNSAFE_CONTROL_PATTERN.test(match.displayName)
+    ) return undefined;
+    matches.push({ householdId: match.householdId, displayName: match.displayName });
+  }
+  if (new Set(matches.map((match) => match.householdId)).size !== matches.length) return undefined;
+  return { matches, tooMany: value.tooMany };
+};
+
 const parseSubmitResult = (
   value: unknown,
   expectedIdempotencyKey: string,
@@ -320,6 +343,7 @@ export const assertEnvironment = (env: Env): void => {
     !RANDOM_SECRET_PATTERN.test(env.ACCESS_CODE_HASH_SECRET) ||
     new Set(env.ACCESS_CODE_HASH_SECRET).size < 16 ||
     (env.HOUSEHOLD_CODES_ENABLED !== 'true' && env.HOUSEHOLD_CODES_ENABLED !== 'false') ||
+    (env.NAME_LOOKUP_ENABLED !== undefined && env.NAME_LOOKUP_ENABLED !== 'true' && env.NAME_LOOKUP_ENABLED !== 'false') ||
     typeof env.INVITATION_TOKEN_HASH_SECRET !== 'string' ||
     env.INVITATION_TOKEN_HASH_SECRET.length < 32 ||
     typeof env.WRITER_HMAC_SECRET !== 'string' ||
@@ -406,17 +430,35 @@ export const hashClientIdentity = async (
 };
 
 export const hashCredential = async (
-  credential: { inviteToken: string } | { accessCode: string },
+  credential: InvitationCredential,
   env: Env,
   dependencies: RuntimeDependencies,
 ): Promise<CredentialHash> => {
-  if ('inviteToken' in credential) {
+  if (typeof credential.nameTicket === 'string') {
+    return { nameHouseholdId: await readNameTicket(credential.nameTicket, env, dependencies) };
+  }
+  if (typeof credential.inviteToken === 'string') {
     return { tokenHash: await hashInvitationToken(credential.inviteToken, env, dependencies) };
   }
   if (env.HOUSEHOLD_CODES_ENABLED !== 'true') {
     throw new PublicHttpError(404, 'INVITATION_INVALID');
   }
   return { accessCodeHash: await hashAccessCode(credential.accessCode, env, dependencies) };
+};
+
+export const credentialRateLimitKey = async (
+  credential: CredentialHash,
+  env: Env,
+  dependencies: RuntimeDependencies,
+): Promise<string> => {
+  if (typeof credential.nameHouseholdId === 'string') {
+    return hmacBase64Url(
+      env.ACCESS_CODE_HASH_SECRET,
+      `rsvp-name-household-rate-v1\0${credential.nameHouseholdId}`,
+      dependencies,
+    );
+  }
+  return typeof credential.tokenHash === 'string' ? credential.tokenHash : credential.accessCodeHash;
 };
 
 export const verifyTurnstile = async (
@@ -517,7 +559,7 @@ export const callWriter = async <T>(
   expectedIdempotencyKey: string | undefined,
   env: Env,
   dependencies: RuntimeDependencies,
-): Promise<ResolveResult | SubmitResult> => {
+): Promise<ResolveResult | SubmitResult | WriterSearchResult> => {
   const envelope = await createWriterEnvelope(operation, data, requestId, env, dependencies);
   let response: Response;
   try {
@@ -559,7 +601,9 @@ export const callWriter = async <T>(
   }
 
   const parsed =
-    operation === 'resolve'
+    operation === 'search'
+      ? parseSearchResult(result.data)
+      : operation === 'resolve'
       ? parseResolveResult(result.data)
       : expectedIdempotencyKey === undefined ||
           !isRecord(data) ||

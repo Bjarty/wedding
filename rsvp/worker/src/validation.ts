@@ -5,7 +5,9 @@ import {
   type FieldIssue,
   type GuestSubmission,
   type MealChoice,
+  type InvitationCredential,
   type ResolveRequest,
+  type SearchRequest,
   type SubmitRequest,
 } from './contract.js';
 
@@ -43,12 +45,24 @@ export const normalizeAccessCode = (value: string): string =>
 const parseCredential = (
   record: Record<string, unknown>,
   issues: FieldIssue[],
-): { inviteToken: string } | { accessCode: string } | undefined => {
+): InvitationCredential | undefined => {
   const hasInviteToken = Object.hasOwn(record, 'inviteToken');
   const hasAccessCode = Object.hasOwn(record, 'accessCode');
-  if (hasInviteToken === hasAccessCode) {
-    issues.push({ path: 'credential', code: hasInviteToken ? 'inconsistent' : 'required' });
+  const hasNameTicket = Object.hasOwn(record, 'nameTicket');
+  const credentialCount = Number(hasInviteToken) + Number(hasAccessCode) + Number(hasNameTicket);
+  if (credentialCount !== 1) {
+    issues.push({ path: 'credential', code: credentialCount > 1 ? 'inconsistent' : 'required' });
     return undefined;
+  }
+
+  if (hasNameTicket) {
+    const nameTicket = requiredString(
+      record,
+      'nameTicket',
+      { min: 1, max: LIMITS.nameTicketMax, pattern: /^nt1\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]{43}$/u },
+      issues,
+    );
+    return nameTicket === undefined ? undefined : { nameTicket };
   }
 
   if (hasInviteToken) {
@@ -190,13 +204,32 @@ const parseGuest = (value: unknown, index: number, issues: FieldIssue[]): GuestS
   return mealChoice === undefined ? { guestId, attending } : { guestId, attending, mealChoice };
 };
 
+export const parseSearchRequest = (value: unknown): ParseResult<SearchRequest> => {
+  if (!isRecord(value)) return { ok: false, issues: [{ path: 'body', code: 'invalid_type' }] };
+  const issues: FieldIssue[] = [];
+  addUnknownFieldIssue(value, new Set(['query', 'turnstileToken']), 'body', issues);
+  const query = requiredString(value, 'query', {
+    min: LIMITS.nameQueryMin,
+    max: LIMITS.nameQueryMax,
+    pattern: /^[\p{L}\p{M} .’'\-]+$/u,
+  }, issues);
+  if (query !== undefined && (query.match(/\p{L}/gu)?.length ?? 0) < LIMITS.nameQueryMin) {
+    issues.push({ path: 'query', code: 'too_short' });
+  }
+  const turnstileToken = requiredString(value, 'turnstileToken', {
+    min: 1, max: LIMITS.turnstileTokenMax,
+  }, issues);
+  if (issues.length > 0 || query === undefined || turnstileToken === undefined) return { ok: false, issues };
+  return { ok: true, value: { query, turnstileToken } };
+};
+
 export const parseResolveRequest = (value: unknown): ParseResult<ResolveRequest> => {
   if (!isRecord(value)) {
     return { ok: false, issues: [{ path: 'body', code: 'invalid_type' }] };
   }
 
   const issues: FieldIssue[] = [];
-  addUnknownFieldIssue(value, new Set(['inviteToken', 'accessCode', 'turnstileToken']), 'body', issues);
+  addUnknownFieldIssue(value, new Set(['inviteToken', 'accessCode', 'nameTicket', 'turnstileToken']), 'body', issues);
   const credential = parseCredential(value, issues);
   const turnstileToken = requiredString(
     value,
@@ -222,6 +255,7 @@ export const parseSubmitRequest = (value: unknown): ParseResult<SubmitRequest> =
     new Set([
       'inviteToken',
       'accessCode',
+      'nameTicket',
       'idempotencyKey',
       'revision',
       'attending',

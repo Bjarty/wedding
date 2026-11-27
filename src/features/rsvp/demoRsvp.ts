@@ -1,6 +1,7 @@
 import type { RsvpExperienceServices } from './RsvpExperience';
 import { RsvpApiError } from './api';
 import { isPublicDemoHouseholdCode } from './householdCode';
+import { isValidNameQuery, type NameSearchServices } from './nameSearch';
 import type { CurrentRsvp, ResolvedHousehold, RsvpCredential, SubmitPayload } from './types';
 
 const demoGuests = [
@@ -9,6 +10,13 @@ const demoGuests = [
 ] as const;
 
 let currentRsvp: CurrentRsvp | null = null;
+
+// Public synthetic value for the local demo, never accepted by the live Worker.
+export const PUBLIC_DEMO_NAME_TICKET = `nt1.ZGVtby1nYXJjaWE.${'A'.repeat(43)}`;
+
+const isDemoCredential = (credential: RsvpCredential): boolean =>
+  (credential.type === 'accessCode' && isPublicDemoHouseholdCode(credential.value)) ||
+  (credential.type === 'nameTicket' && credential.value === PUBLIC_DEMO_NAME_TICKET);
 
 const cloneCurrentRsvp = (): CurrentRsvp | null => {
   if (currentRsvp === null) return null;
@@ -19,7 +27,7 @@ const cloneCurrentRsvp = (): CurrentRsvp | null => {
 };
 
 const resolveDemoHousehold = async (credential: RsvpCredential): Promise<ResolvedHousehold> => {
-  if (credential.type !== 'accessCode' || !isPublicDemoHouseholdCode(credential.value)) {
+  if (!isDemoCredential(credential)) {
     throw new RsvpApiError('INVITATION_INVALID');
   }
 
@@ -35,7 +43,7 @@ const resolveDemoHousehold = async (credential: RsvpCredential): Promise<Resolve
 };
 
 const submitDemoRsvp = async (payload: SubmitPayload) => {
-  if (payload.credential.type !== 'accessCode' || !isPublicDemoHouseholdCode(payload.credential.value)) {
+  if (!isDemoCredential(payload.credential)) {
     throw new RsvpApiError('INVITATION_INVALID');
   }
   if (payload.revision !== (currentRsvp?.revision ?? 0)) {
@@ -83,6 +91,20 @@ export const invitationDemoServices: RsvpExperienceServices = {
   requestTurnstileToken: async () => 'local-demo-challenge',
   resolveHousehold: async (_apiBaseUrl, credential) => resolveDemoHousehold(credential),
   submitRsvp: async (_apiBaseUrl, payload) => submitDemoRsvp(payload),
+};
+
+export const invitationDemoNameSearchServices: NameSearchServices = {
+  requestTurnstileToken: invitationDemoServices.requestTurnstileToken,
+  searchHouseholds: async (_apiBaseUrl, query) => {
+    if (!isValidNameQuery(query)) throw new RsvpApiError('VALIDATION_FAILED');
+    const normalize = (value: string) => value.normalize('NFD').replace(/\p{M}/gu, '').toLowerCase().trim();
+    const words = normalize(query).split(/\s+/u);
+    const match = words.every((word) => normalize('Alex Sam Garcia').includes(word));
+    return {
+      matches: match ? [{ displayName: 'Alex & Sam Garcia', nameTicket: PUBLIC_DEMO_NAME_TICKET }] : [],
+      tooMany: false,
+    };
+  },
 };
 
 export const resetInvitationDemo = (): void => {

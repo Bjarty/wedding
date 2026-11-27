@@ -1,13 +1,41 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { RsvpApiError } from './api';
-import { invitationDemoServices, resetInvitationDemo } from './demoRsvp';
+import { invitationDemoNameSearchServices, invitationDemoServices, PUBLIC_DEMO_NAME_TICKET, resetInvitationDemo } from './demoRsvp';
 import {
   LEGACY_PUBLIC_DEMO_HOUSEHOLD_CODE,
   PUBLIC_DEMO_HOUSEHOLD_CODE,
 } from './householdCode';
 
 const idempotencyKey = '11111111-1111-4111-8111-111111111111';
+
+test('de naamdemo vindt dezelfde groep, slaat op en opent daarna dezelfde reactie voor wijzigen', async () => {
+  resetInvitationDemo();
+  for (const query of ['Alex', 'Sam', 'garcía']) {
+    const found = await invitationDemoNameSearchServices.searchHouseholds('https://demo.invalid', query, 'demo-challenge');
+    assert.equal(found.matches.length, 1);
+    assert.equal(found.matches[0].nameTicket, PUBLIC_DEMO_NAME_TICKET);
+  }
+  const none = await invitationDemoNameSearchServices.searchHouseholds('https://demo.invalid', 'Niemand', 'demo-challenge');
+  assert.equal(none.matches.length, 0);
+  const credential = { type: 'nameTicket', value: PUBLIC_DEMO_NAME_TICKET } as const;
+  const household = await invitationDemoServices.resolveHousehold('https://demo.invalid', credential, 'demo-challenge');
+  assert.equal(household.guests.length, 2);
+  const first = await invitationDemoServices.submitRsvp('https://demo.invalid', {
+    credential, idempotencyKey, revision: 0, attending: true,
+    guests: [{ guestId: 'demo_garcia_alex', attending: true, mealChoice: 'vegan' }, { guestId: 'demo_garcia_sam', attending: false }],
+    turnstileToken: 'demo-challenge',
+  });
+  const reopened = await invitationDemoServices.resolveHousehold('https://demo.invalid', credential, 'demo-challenge');
+  assert.equal(reopened.currentRsvp?.guests[0].mealChoice, 'vegan');
+  const second = await invitationDemoServices.submitRsvp('https://demo.invalid', {
+    credential, idempotencyKey: '22222222-2222-4222-8222-222222222222', revision: reopened.currentRsvp!.revision, attending: true,
+    guests: [{ guestId: 'demo_garcia_alex', attending: true, mealChoice: 'fish' }, { guestId: 'demo_garcia_sam', attending: false }],
+    turnstileToken: 'demo-challenge',
+  });
+  assert.equal(second.revision, 2);
+  assert.equal(second.receiptNumber, first.receiptNumber);
+});
 
 test('de lokale Familie Garcia-demo resolveert en bewaart alleen in modulegeheugen', async () => {
   resetInvitationDemo();

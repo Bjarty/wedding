@@ -9,17 +9,21 @@ import {
   type ResolveResult,
   type RuntimeDependencies,
   type SubmitResult,
+  type SearchResult,
+  type WriterSearchResult,
 } from './contract.js';
 import { getPublicMessage, PublicHttpError } from './errors.js';
 import {
   assertEnvironment,
   callWriter,
+  credentialRateLimitKey,
   enforceRateLimit,
   hashClientIdentity,
   hashCredential,
   verifyTurnstile,
 } from './integrations.js';
-import { parseResolveRequest, parseSubmitRequest } from './validation.js';
+import { createNameTicket } from './nameTicket.js';
+import { parseResolveRequest, parseSearchRequest, parseSubmitRequest } from './validation.js';
 
 const defaultDependencies: RuntimeDependencies = {
   fetch: (input, init) => fetch(input, init),
@@ -113,7 +117,7 @@ const readJsonBody = async (request: Request): Promise<unknown> => {
   }
 };
 
-const isKnownRoute = (path: string): boolean => path === ROUTES.resolve || path === ROUTES.submit;
+const isKnownRoute = (path: string): boolean => path === ROUTES.search || path === ROUTES.resolve || path === ROUTES.submit;
 
 const validatePreflight = (request: Request): void => {
   const requestedMethod = request.headers.get('access-control-request-method');
@@ -153,6 +157,9 @@ export const handleRequest = async (
     const url = new URL(request.url);
     if (!isKnownRoute(url.pathname)) throw new PublicHttpError(404, 'NOT_FOUND');
     if (url.search !== '') throw new PublicHttpError(400, 'BAD_REQUEST');
+    if (url.pathname === ROUTES.search && env.NAME_LOOKUP_ENABLED !== 'true') {
+      throw new PublicHttpError(404, 'NOT_FOUND');
+    }
 
     if (request.method === 'OPTIONS') {
       validatePreflight(request);
@@ -173,18 +180,40 @@ export const handleRequest = async (
     const clientKey = await hashClientIdentity(request, env, dependencies);
     await enforceRateLimit(env.CLIENT_RATE_LIMITER, clientKey);
 
+    if (url.pathname === ROUTES.search) {
+      // This key is stable across queries; changing names cannot bypass the
+      // tighter search limit. It contains neither the raw query nor the IP.
+      await enforceRateLimit(env.RESOLVE_RATE_LIMITER, `name-search:${clientKey}`);
+    }
+
     const body = await readJsonBody(request);
+
+    if (url.pathname === ROUTES.search) {
+      const parsed = parseSearchRequest(body);
+      if (!parsed.ok) throw new PublicHttpError(422, 'VALIDATION_FAILED', { fields: parsed.issues });
+      await verifyTurnstile(
+        parsed.value.turnstileToken, TURNSTILE_ACTIONS.search, requestId, env, dependencies,
+      );
+      const result = (await callWriter(
+        'search', { query: parsed.value.query }, requestId, undefined, env, dependencies,
+      )) as WriterSearchResult;
+      const response: SearchResult = {
+        matches: await Promise.all(result.matches.map(async (match) => ({
+          displayName: match.displayName,
+          nameTicket: await createNameTicket(match.householdId, env, dependencies),
+        }))),
+        tooMany: result.tooMany,
+      };
+      return jsonSuccess(200, response, requestId, corsOrigin);
+    }
 
     if (url.pathname === ROUTES.resolve) {
       const parsed = parseResolveRequest(body);
       if (!parsed.ok) throw new PublicHttpError(422, 'VALIDATION_FAILED', { fields: parsed.issues });
-      const credential = 'inviteToken' in parsed.value
-        ? { inviteToken: parsed.value.inviteToken }
-        : { accessCode: parsed.value.accessCode };
-      const credentialHash = await hashCredential(credential, env, dependencies);
+      const credentialHash = await hashCredential(parsed.value, env, dependencies);
       await enforceRateLimit(
         env.RESOLVE_RATE_LIMITER,
-        'tokenHash' in credentialHash ? credentialHash.tokenHash : credentialHash.accessCodeHash,
+        await credentialRateLimitKey(credentialHash, env, dependencies),
       );
       await verifyTurnstile(
         parsed.value.turnstileToken,
@@ -206,13 +235,10 @@ export const handleRequest = async (
 
     const parsed = parseSubmitRequest(body);
     if (!parsed.ok) throw new PublicHttpError(422, 'VALIDATION_FAILED', { fields: parsed.issues });
-    const credential = 'inviteToken' in parsed.value
-      ? { inviteToken: parsed.value.inviteToken }
-      : { accessCode: parsed.value.accessCode };
-    const credentialHash = await hashCredential(credential, env, dependencies);
+    const credentialHash = await hashCredential(parsed.value, env, dependencies);
     await enforceRateLimit(
       env.SUBMIT_RATE_LIMITER,
-      'tokenHash' in credentialHash ? credentialHash.tokenHash : credentialHash.accessCodeHash,
+      await credentialRateLimitKey(credentialHash, env, dependencies),
     );
     await verifyTurnstile(
       parsed.value.turnstileToken,
@@ -265,4 +291,6 @@ export type {
   ResolveResult,
   SubmitRequest,
   SubmitResult,
+  SearchRequest,
+  SearchResult,
 } from './contract.js';

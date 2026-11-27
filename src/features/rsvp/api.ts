@@ -2,6 +2,7 @@ import type {
   CurrentRsvp,
   GuestSubmission,
   MealChoice,
+  NameSearchResult,
   PublicErrorCode,
   ResolvedHousehold,
   RsvpCredential,
@@ -39,9 +40,11 @@ export const RSVP_REQUEST_TIMEOUT_MILLISECONDS = 80_000;
 
 export const credentialRequestFields = (
   credential: RsvpCredential,
-): { inviteToken: string } | { accessCode: string } =>
+): { inviteToken: string } | { accessCode: string } | { nameTicket: string } =>
   credential.type === 'inviteToken'
     ? { inviteToken: credential.value }
+    : credential.type === 'nameTicket'
+      ? { nameTicket: credential.value }
     : { accessCode: credential.value };
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -290,6 +293,43 @@ export const resolveHousehold = async (
   if (household === null) throw new RsvpApiError('UPSTREAM_UNAVAILABLE');
   return household;
 };
+
+export const parseNameSearchResult = (value: unknown): NameSearchResult => {
+  if (
+    !isRecord(value) ||
+    Object.keys(value).some((key) => key !== 'matches' && key !== 'tooMany') ||
+    !Array.isArray(value.matches) || value.matches.length > 8 ||
+    typeof value.tooMany !== 'boolean' ||
+    (value.tooMany && value.matches.length !== 0)
+  ) throw new RsvpApiError('UPSTREAM_UNAVAILABLE');
+
+  const seen = new Set<string>();
+  const matches = value.matches.map((match) => {
+    if (
+      !isRecord(match) ||
+      Object.keys(match).some((key) => key !== 'displayName' && key !== 'nameTicket') ||
+      typeof match.displayName !== 'string' || match.displayName.trim() === '' ||
+      match.displayName.length > 160 || /[\u0000-\u001f\u007f]/u.test(match.displayName) ||
+      typeof match.nameTicket !== 'string' || match.nameTicket.length > 512 ||
+      !/^nt1\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]{43}$/u.test(match.nameTicket) || seen.has(match.nameTicket)
+    ) throw new RsvpApiError('UPSTREAM_UNAVAILABLE');
+    seen.add(match.nameTicket);
+    return { displayName: match.displayName, nameTicket: match.nameTicket };
+  });
+  return { matches, tooMany: value.tooMany };
+};
+
+export const searchHouseholds = async (
+  apiBaseUrl: string,
+  query: string,
+  turnstileToken: string,
+  signal?: AbortSignal,
+): Promise<NameSearchResult> => parseNameSearchResult(await post(
+  apiBaseUrl,
+  '/v1/households/search',
+  { query: query.trim(), turnstileToken },
+  signal,
+));
 
 export const submitRsvp = async (
   apiBaseUrl: string,

@@ -1,6 +1,11 @@
-# Uitnodigingen met één gedeelde QR en persoonlijke codes
+# Eerdere uitnodigingen met één gedeelde QR en persoonlijke codes
 
-## Definitief model
+> Nieuwe werkwijze: gasten zoeken op naam en kiezen hun groep, zonder zichtbare
+> code. Zie [NAME-LOOKUP.md](./NAME-LOOKUP.md) voor activering en gastenbeheer.
+> Onderstaande codewerkwijze blijft gedocumenteerd voor bestaande uitnodigingen
+> en rollback; zij is niet de gewenste instap na activering van de naamzoeker.
+
+## Bestaand codemodel (overgang en rollback)
 
 Gebruik op alle fysieke uitnodigingen dezelfde QR-code. Deze verwijst exact
 naar:

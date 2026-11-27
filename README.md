@@ -39,9 +39,17 @@ externe omgeving worden geprovisioned.
 
 ## RSVP-configuratie
 
+De nieuwe naamgebaseerde instap laat gasten op voornaam of familienaam zoeken,
+hun groep kiezen en per persoon reageren, zonder zichtbare code of mailverificatie.
+De echte namen staan alleen in de private Sheet, nooit in de websitebundle of Git.
+De bronlijst en importbestanden blijven buiten Git (lokaal eventueel onder
+`.local/rsvp/`). Zie [naamzoeker en gastenbeheer](rsvp/NAME-LOOKUP.md) voor de
+bewuste privacykeuze, invoerformaat, reviewpunten en exact te beoordelen migratie.
+Deze codewijziging activeert of deployt zelf geen externe diensten.
+
 Zonder lokale RSVP-configuratie toont de websitevoorvertoning **RSVP is
-geopend**, met een link naar de live RSVP. Daar kunnen gasten hun persoonlijke
-code (`XXX-XXX`) invullen. Echte reacties worden alleen via de livewebsite
+geopend**, met een link naar de live RSVP. Daar kunnen gasten hun naam zoeken
+zodra de naamzoeker in productie is geactiveerd. Echte reacties worden alleen via de livewebsite
 verstuurd; lokaal wordt niet automatisch een demonstratie gestart.
 
 Kopieer `.env.example` alleen voor expliciet geconfigureerd lokaal ontwikkelen
@@ -49,6 +57,7 @@ naar `.env.local`. Gebruik geen verwijderde test-Worker of test-Sheet:
 
 ```text
 VITE_RSVP_ENABLED=false
+VITE_RSVP_NAME_LOOKUP_ENABLED=false
 VITE_RSVP_HOUSEHOLD_CODES_ENABLED=false
 VITE_RSVP_CONFIRMATION_EMAIL_ENABLED=false
 VITE_RSVP_API_BASE_URL=https://...
@@ -56,8 +65,10 @@ VITE_TURNSTILE_SITE_KEY=...
 ```
 
 Een actieve RSVP-build vereist `VITE_RSVP_ENABLED=true` én beide publieke
-endpointwaarden. Voor de invoer van persoonlijke codes moet ook
-`VITE_RSVP_HOUSEHOLD_CODES_ENABLED=true` zijn ingesteld. Bij ontbrekende
+endpointwaarden. `VITE_RSVP_NAME_LOOKUP_ENABLED=true` kiest de naamzoeker en
+heeft voorrang op `VITE_RSVP_HOUSEHOLD_CODES_ENABLED`. De oude codes kunnen
+tijdens de overgang backend-side bruikbaar blijven zonder zichtbare code-invoer
+in de naamzoeker. Bij ontbrekende
 configuratie in een productiebuild blijft het formulier veilig uit en verschijnt
 **RSVP is tijdelijk niet beschikbaar**, met een contactlink.
 Alleen de productievariabelen lokaal invullen is niet voldoende: de
@@ -70,10 +81,10 @@ Turnstile-secrets en uitnodigingstoken-secrets horen nooit in een `VITE_`
 variabele of in Git. De `RESEND_API_KEY` hoort uitsluitend in Apps Script
 Script Properties en nooit in Pages, Cloudflare, de Sheet of Git.
 
-Voor Pages leest de build vier waarden als repositoryvariabelen onder
+Voor Pages leest de build de publieke waarden als repositoryvariabelen onder
 **Settings → Secrets and variables → Actions → Variables**. Ze komen bewust
 niet uit secrets of alleen uit de `github-pages`-environment:
-`VITE_RSVP_ENABLED`, `VITE_RSVP_HOUSEHOLD_CODES_ENABLED`,
+`VITE_RSVP_ENABLED`, `VITE_RSVP_NAME_LOOKUP_ENABLED`, `VITE_RSVP_HOUSEHOLD_CODES_ENABLED`,
 `VITE_RSVP_API_BASE_URL` en `VITE_TURNSTILE_SITE_KEY`. De beoordeelde
 Pages-workflow zet `VITE_RSVP_CONFIRMATION_EMAIL_ENABLED=true` expliciet omdat
 de productie-outbox en Resend-route end-to-end zijn gecontroleerd.

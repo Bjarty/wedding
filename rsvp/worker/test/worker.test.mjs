@@ -4,6 +4,7 @@ import test from 'node:test';
 
 import { handleRequest } from '../dist/index.js';
 import { WRITER_TIMEOUT_MILLISECONDS } from '../dist/integrations.js';
+import { createNameTicket, readNameTicket, NAME_TICKET_LIFETIME_SECONDS } from '../dist/nameTicket.js';
 import { createInvitation } from '../scripts/provision-invitation.mjs';
 
 const ORIGIN = 'https://lisetteenbjarty.nl';
@@ -39,6 +40,14 @@ const baseEnv = {
   TURNSTILE_SECRET: 'turnstile-test-secret-long-enough',
   WRITER_URL,
   WRITER_HMAC_SECRET: WRITER_SECRET,
+};
+
+const nameEnv = { ...baseEnv, NAME_LOOKUP_ENABLED: 'true' };
+const searchPath = '/v1/households/search';
+const searchBody = { query: 'Voorbeeld', turnstileToken: 'search-challenge' };
+const writerSearchData = {
+  matches: [{ householdId: 'hh_example', displayName: 'Gast één & Gast twee — Voorbeeld' }],
+  tooMany: false,
 };
 
 const resolveData = {
@@ -810,6 +819,297 @@ test('fails closed when secrets are missing, short, or reused', async () => {
     assert.equal(response.status, 503);
     assert.equal((await parseJson(response)).error.code, 'CONFIGURATION_ERROR');
   }
+});
+
+test('name search is disabled by default and cannot bypass an explicit disabled flag', async () => {
+  for (const flag of [undefined, 'false']) {
+    const env = { ...baseEnv, ...(flag === undefined ? {} : { NAME_LOOKUP_ENABLED: flag }) };
+    const dependencies = makeDependencies(async () => { throw new Error('disabled search must not fetch'); });
+    const response = await handleRequest(makeRequest(searchPath, searchBody), env, dependencies);
+    assert.equal(response.status, 404);
+    assert.equal((await parseJson(response)).error.code, 'NOT_FOUND');
+  }
+  const dependencies = makeDependencies(async () => { throw new Error('disabled ticket must not fetch'); });
+  const nameTicket = await createNameTicket('hh_example', nameEnv, dependencies);
+  const response = await handleRequest(
+    makeRequest('/v1/households/resolve', { nameTicket, turnstileToken: 'x' }),
+    baseEnv, dependencies,
+  );
+  assert.equal(response.status, 404);
+  assert.equal((await parseJson(response)).error.code, 'INVITATION_INVALID');
+});
+
+test('name search signs only the query and returns bounded short-lived selection tickets', async () => {
+  const upstream = makeHappyFetch({
+    action: 'rsvp_search', writerData: writerSearchData,
+    onWriter: (envelope) => {
+      const payload = decodePayload(envelope);
+      assert.equal(payload.operation, 'search');
+      assert.deepEqual(payload.data, { query: 'Mélanie' });
+      assert.equal(envelope.payload.includes(searchBody.turnstileToken), false);
+    },
+  });
+  const dependencies = makeDependencies(upstream.fetch);
+  const response = await handleRequest(
+    makeRequest(searchPath, { ...searchBody, query: '  Me\u0301lanie  ' }), nameEnv, dependencies,
+  );
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get('cache-control'), 'no-store');
+  const result = (await parseJson(response)).data;
+  assert.deepEqual(Object.keys(result).sort(), ['matches', 'tooMany']);
+  assert.equal(result.tooMany, false);
+  assert.equal(result.matches.length, 1);
+  assert.deepEqual(Object.keys(result.matches[0]).sort(), ['displayName', 'nameTicket']);
+  assert.equal(result.matches[0].displayName, writerSearchData.matches[0].displayName);
+  assert.match(result.matches[0].nameTicket, /^nt1\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]{43}$/u);
+  assert.ok(result.matches[0].nameTicket.length <= 512);
+  assert.equal(await readNameTicket(result.matches[0].nameTicket, nameEnv, dependencies), 'hh_example');
+  const ticketPayload = JSON.parse(Buffer.from(result.matches[0].nameTicket.split('.')[1], 'base64url'));
+  assert.deepEqual(Object.keys(ticketPayload).sort(), ['expiresAt', 'householdId', 'v']);
+  assert.equal(ticketPayload.expiresAt, Math.floor(dependencies.now() / 1000) + 3600);
+  assert.equal(NAME_TICKET_LIFETIME_SECONDS, 3600);
+});
+
+test('name search rejects empty, short, punctuation-only, wildcard, control and oversized queries', async () => {
+  for (const query of ['', 'a', 'a-', '...', '  ', '*', '%', 'A\nB', 'AB\u0000', 'A'.repeat(81), 12, null]) {
+    const response = await handleRequest(
+      makeRequest(searchPath, { ...searchBody, query }), nameEnv,
+      makeDependencies(async () => { throw new Error('invalid query must not fetch'); }),
+    );
+    assert.equal(response.status, 422);
+    assert.equal((await parseJson(response)).error.code, 'VALIDATION_FAILED');
+  }
+  for (const query of ['Li', 'O’Connor', "D'Artagnan", 'van den Berg', 'Anne-Marie', 'J. Voorbeeld']) {
+    const upstream = makeHappyFetch({ action: 'rsvp_search', writerData: { matches: [], tooMany: false } });
+    const response = await handleRequest(makeRequest(searchPath, { ...searchBody, query }), nameEnv, makeDependencies(upstream.fetch));
+    assert.equal(response.status, 200);
+  }
+  const extraField = await handleRequest(
+    makeRequest(searchPath, { ...searchBody, householdId: 'hh_example' }), nameEnv,
+    makeDependencies(async () => { throw new Error('unknown field must not fetch'); }),
+  );
+  assert.equal(extraField.status, 422);
+});
+
+test('name search applies exact-origin, POST and no-query-string rules', async () => {
+  for (const [options, status] of [
+    [{ origin: 'https://www.lisetteenbjarty.nl' }, 403],
+    [{ query: '?query=Voorbeeld' }, 400],
+    [{ method: 'GET' }, 405],
+    [{ contentType: 'text/plain' }, 415],
+  ]) {
+    const response = await handleRequest(
+      makeRequest(searchPath, searchBody, options), nameEnv,
+      makeDependencies(async () => { throw new Error('invalid request must not fetch'); }),
+    );
+    assert.equal(response.status, status);
+  }
+});
+
+test('name search has a stable privacy-safe client limit independent of query before reading the body', async () => {
+  const searchKeys = [];
+  const env = {
+    ...nameEnv,
+    RESOLVE_RATE_LIMITER: { limit: async ({ key }) => { searchKeys.push(key); return { success: false }; } },
+  };
+  for (const query of ['Voorbeeld', 'Andere naam']) {
+    const response = await handleRequest(
+      makeRequest(searchPath, { ...searchBody, query }), env,
+      makeDependencies(async () => { throw new Error('limited search must not fetch'); }),
+    );
+    assert.equal(response.status, 429);
+    assert.equal(response.headers.get('retry-after'), '60');
+  }
+  assert.equal(searchKeys.length, 2);
+  assert.equal(searchKeys[0], searchKeys[1]);
+  assert.match(searchKeys[0], /^name-search:[A-Za-z0-9_-]{43}$/u);
+  assert.doesNotMatch(searchKeys[0], /Voorbeeld|Andere|2001:db8/u);
+
+  const malformedRequest = new Request(`https://rsvp-api.example.test${searchPath}`, {
+    method: 'POST', headers: { Origin: ORIGIN, 'Content-Type': 'application/json' }, body: '{bad json',
+  });
+  const response = await handleRequest(malformedRequest, env, makeDependencies(async () => { throw new Error('must not fetch'); }));
+  assert.equal(response.status, 429);
+});
+
+test('name search requires its own successful Turnstile action before contacting the writer', async () => {
+  const upstream = makeHappyFetch({ action: 'rsvp_resolve', writerData: writerSearchData });
+  const response = await handleRequest(makeRequest(searchPath, searchBody), nameEnv, makeDependencies(upstream.fetch));
+  assert.equal(response.status, 403);
+  assert.equal((await parseJson(response)).error.code, 'CHALLENGE_FAILED');
+  assert.equal(upstream.calls, 1);
+});
+
+test('name search rejects oversized, duplicate or privacy-leaking writer results', async () => {
+  const invalidResults = [
+    { matches: writerSearchData.matches, tooMany: true },
+    { matches: writerSearchData.matches, tooMany: false, email: 'private@example.test' },
+    { matches: [...writerSearchData.matches, ...writerSearchData.matches], tooMany: false },
+    { matches: Array.from({ length: 9 }, (_, n) => ({ householdId: `hh_${n}`, displayName: `Groep ${n}` })), tooMany: false },
+    { matches: [{ householdId: 'hh_one', displayName: 'Naam', guests: ['Niet delen'] }], tooMany: false },
+    { matches: [{ householdId: 'hh_one', displayName: '' }], tooMany: false },
+    { matches: [{ householdId: 'hh_one', displayName: ' ' }], tooMany: false },
+    { matches: [{ householdId: 'hh_one', displayName: 'A'.repeat(161) }], tooMany: false },
+    { matches: [{ householdId: '../bad', displayName: 'Naam' }], tooMany: false },
+    { matches: [], tooMany: 'true' },
+  ];
+  for (const writerData of invalidResults) {
+    const upstream = makeHappyFetch({ action: 'rsvp_search', writerData });
+    const response = await handleRequest(makeRequest(searchPath, searchBody), nameEnv, makeDependencies(upstream.fetch));
+    assert.equal(response.status, 503);
+    const body = await parseJson(response);
+    assert.equal(body.error.code, 'UPSTREAM_UNAVAILABLE');
+    assert.equal(JSON.stringify(body).includes('private@example.test'), false);
+    assert.equal(JSON.stringify(body).includes('nt1.'), false);
+  }
+});
+
+test('too many name matches returns no candidates and asks the frontend to refine', async () => {
+  const upstream = makeHappyFetch({ action: 'rsvp_search', writerData: { matches: [], tooMany: true } });
+  const response = await handleRequest(makeRequest(searchPath, searchBody), nameEnv, makeDependencies(upstream.fetch));
+  assert.equal(response.status, 200);
+  assert.deepEqual((await parseJson(response)).data, { matches: [], tooMany: true });
+});
+
+test('name search selection resolves and submits through the same validated RSVP chain', async () => {
+  const searchUpstream = makeHappyFetch({ action: 'rsvp_search', writerData: writerSearchData });
+  const searchDependencies = makeDependencies(searchUpstream.fetch);
+  const searchResponse = await handleRequest(makeRequest(searchPath, searchBody), nameEnv, searchDependencies);
+  const nameTicket = (await parseJson(searchResponse)).data.matches[0].nameTicket;
+  const resolveKeys = [];
+  const submitKeys = [];
+  const env = {
+    ...nameEnv,
+    RESOLVE_RATE_LIMITER: { limit: async ({ key }) => { resolveKeys.push(key); return { success: true }; } },
+    SUBMIT_RATE_LIMITER: { limit: async ({ key }) => { submitKeys.push(key); return { success: true }; } },
+  };
+  const resolveUpstream = makeHappyFetch({
+    action: 'rsvp_resolve', writerData: resolveData,
+    onWriter: (envelope) => {
+      const payload = decodePayload(envelope);
+      assert.equal(payload.operation, 'resolve');
+      assert.deepEqual(payload.data, { nameHouseholdId: 'hh_example' });
+      assert.equal(JSON.stringify(payload).includes(nameTicket), false);
+    },
+  });
+  const resolveResponse = await handleRequest(
+    makeRequest('/v1/households/resolve', { nameTicket, turnstileToken: 'resolve-challenge' }),
+    env, makeDependencies(resolveUpstream.fetch),
+  );
+  assert.equal(resolveResponse.status, 200);
+  assert.deepEqual((await parseJson(resolveResponse)).data, resolveData);
+  const { inviteToken: ignored, ...submission } = submitBody;
+  const submitUpstream = makeHappyFetch({
+    action: 'rsvp_submit', writerData: submitData,
+    onWriter: (envelope) => {
+      const payload = decodePayload(envelope);
+      assert.equal(payload.operation, 'submit');
+      assert.equal(payload.data.nameHouseholdId, 'hh_example');
+      assert.equal(Object.hasOwn(payload.data, 'nameTicket'), false);
+      assert.equal(Object.hasOwn(payload.data, 'accessCodeHash'), false);
+      assert.equal(Object.hasOwn(payload.data, 'tokenHash'), false);
+      assert.equal(payload.data.revision, 0);
+      assert.equal(payload.data.idempotencyKey, IDEMPOTENCY_KEY);
+      assert.equal(JSON.stringify(payload).includes(nameTicket), false);
+    },
+  });
+  const submitResponse = await handleRequest(
+    makeRequest('/v1/rsvps/submit', { ...submission, nameTicket }), env, makeDependencies(submitUpstream.fetch),
+  );
+  assert.equal(submitResponse.status, 200);
+  assert.deepEqual((await parseJson(submitResponse)).data, submitData);
+  assert.equal(resolveKeys[0], submitKeys[0]);
+  assert.equal(resolveKeys[0], await hmacBase64Url(ACCESS_HASH_SECRET, 'rsvp-name-household-rate-v1\0hh_example'));
+  assert.doesNotMatch(resolveKeys[0], /hh_example|nt1\./u);
+});
+
+test('ticket integrity, canonical encoding, purpose, expiry and payload bounds are enforced without upstream access', async () => {
+  const dependencies = makeDependencies(async () => { throw new Error('invalid ticket must not fetch'); });
+  const validTicket = await createNameTicket('hh_example', nameEnv, dependencies);
+  const [, payload, signature] = validTicket.split('.');
+  const now = Math.floor(dependencies.now() / 1000);
+  const signed = async (object, domain = 'rsvp-name-selection-v1\0') => {
+    const encoded = Buffer.from(JSON.stringify(object)).toString('base64url');
+    return `nt1.${encoded}.${await hmacBase64Url(ACCESS_HASH_SECRET, domain + encoded)}`;
+  };
+  const tamperedPayload = Buffer.from(JSON.stringify({ v: 1, householdId: 'hh_other', expiresAt: now + 3600 })).toString('base64url');
+  const alteredSignature = `${signature[0] === 'A' ? 'B' : 'A'}${signature.slice(1)}`;
+  const invalidTickets = [
+    `nt1.${tamperedPayload}.${signature}`,
+    `nt1.${payload}.${alteredSignature}`,
+    await signed({ v: 1, householdId: 'hh_example', expiresAt: now }),
+    await signed({ v: 1, householdId: 'hh_example', expiresAt: now + 3601 }),
+    await signed({ v: 2, householdId: 'hh_example', expiresAt: now + 3600 }),
+    await signed({ v: 1, householdId: 'hh_example', expiresAt: now + 3600, extra: true }),
+    await signed({ v: 1, householdId: '../bad', expiresAt: now + 3600 }),
+    await signed({ v: 1, householdId: 'hh_example', expiresAt: String(now + 3600) }),
+    await signed({ v: 1, householdId: 'hh_example', expiresAt: now + 3600 }, 'rsvp-access-code-v1\0'),
+  ];
+  for (const nameTicket of invalidTickets) {
+    const response = await handleRequest(
+      makeRequest('/v1/households/resolve', { nameTicket, turnstileToken: 'x' }), nameEnv, dependencies,
+    );
+    assert.equal(response.status, 404);
+    assert.equal((await parseJson(response)).error.code, 'INVITATION_INVALID');
+  }
+  await assert.rejects(() => readNameTicket(validTicket + '=', nameEnv, dependencies), { code: 'INVITATION_INVALID' });
+  await assert.rejects(() => readNameTicket('x'.repeat(513), nameEnv, dependencies), { code: 'INVITATION_INVALID' });
+  const laterDependencies = { ...dependencies, now: () => dependencies.now() + 3600_000 };
+  await assert.rejects(() => readNameTicket(validTicket, nameEnv, laterDependencies), { code: 'INVITATION_INVALID' });
+});
+
+test('renewing a name selection cannot reset the per-household resolve limit', async () => {
+  const dependencies = makeDependencies(async () => { throw new Error('limited request must not fetch'); });
+  const later = { ...dependencies, now: () => dependencies.now() + 10_000 };
+  const first = await createNameTicket('hh_example', nameEnv, dependencies);
+  const second = await createNameTicket('hh_example', nameEnv, later);
+  assert.notEqual(first, second);
+  const keys = [];
+  const env = { ...nameEnv, RESOLVE_RATE_LIMITER: { limit: async ({ key }) => { keys.push(key); return { success: false }; } } };
+  for (const nameTicket of [first, second]) {
+    const response = await handleRequest(
+      makeRequest('/v1/households/resolve', { nameTicket, turnstileToken: 'x' }), env, later,
+    );
+    assert.equal(response.status, 429);
+  }
+  assert.equal(keys[0], keys[1]);
+});
+
+test('name credentials reject mixing credentials and direct household selection on resolve and submit', async () => {
+  const dependencies = makeDependencies(async () => { throw new Error('invalid credential must not fetch'); });
+  const nameTicket = await createNameTicket('hh_example', nameEnv, dependencies);
+  const { inviteToken: ignored, ...submission } = submitBody;
+  for (const credential of [
+    { nameTicket, inviteToken: RAW_TOKEN },
+    { nameTicket, accessCode: RAW_SHORT_ACCESS_CODE },
+    { nameTicket, nameHouseholdId: 'hh_other' },
+    { nameHouseholdId: 'hh_example' },
+    { householdId: 'hh_example' },
+  ]) {
+    for (const [path, body] of [
+      ['/v1/households/resolve', { ...credential, turnstileToken: 'x' }],
+      ['/v1/rsvps/submit', { ...submission, ...credential }],
+    ]) {
+      const response = await handleRequest(makeRequest(path, body), nameEnv, dependencies);
+      assert.equal(response.status, 422);
+    }
+  }
+});
+
+test('name selection never bypasses a writer rejection after directory revocation', async () => {
+  const dependencies = makeDependencies(async (input, init) => {
+    if (String(input).includes('/turnstile/v0/siteverify')) {
+      return Response.json({ success: true, hostname: 'lisetteenbjarty.nl', action: 'rsvp_resolve' });
+    }
+    const envelope = JSON.parse(String(init.body));
+    return Response.json({ version: 'v1', requestId: envelope.requestId, ok: false, error: { code: 'INVITATION_INVALID' } });
+  });
+  const nameTicket = await createNameTicket('hh_example', nameEnv, dependencies);
+  const response = await handleRequest(
+    makeRequest('/v1/households/resolve', { nameTicket, turnstileToken: 'x' }), nameEnv, dependencies,
+  );
+  assert.equal(response.status, 404);
+  assert.equal((await parseJson(response)).error.code, 'INVITATION_INVALID');
 });
 
 test('offline provisioning emits a private fragment link and the same keyed token hash', async () => {

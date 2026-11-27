@@ -1604,6 +1604,236 @@ for (const sheet of spreadsheet.sheets.values()) assert.equal(sheet.getLastRow()
 assert.equal(properties.has('RSVP_SHEET_CLEAR_CONFIRMATION'), false);
 assert.equal(typeof properties.get('LAST_RSVP_SHEET_CLEAR_AT'), 'string');
 
+// Name-only access: private roster import, bounded search and the same durable writer.
+testNowMilliseconds = TEST_NOW_MILLISECONDS;
+resetFaults();
+properties.set('CONFIRMATION_EMAIL_ENABLED', 'false');
+properties.set('RSVP_CLOSE_AT', '2099-01-01T00:00:00+01:00');
+assert.deepEqual(hostValue(run('initNameLookupSheets()')), { initialized: ['GuestRoster', 'NameDirectory'] });
+const rosterSheet = spreadsheet.getSheetByName('GuestRoster');
+const directorySheet = spreadsheet.getSheetByName('NameDirectory');
+assert.deepEqual(rosterSheet.rows[0], [
+  'householdId', 'guestId', 'firstName', 'familyNames', 'invitationVariant', 'searchEnabled', 'reviewNote',
+]);
+assert.deepEqual(directorySheet.rows[0], ['householdId', 'displayName', 'searchNames', 'active']);
+assert.equal(post(makeEnvelope('search', { query: 'Alma' })).error.code, 'INVITATION_INVALID');
+assert.equal(post(makeEnvelope('resolve', { nameHouseholdId: 'names_a' })).error.code, 'INVITATION_INVALID');
+const rosterRows = [
+  ['names_a', 'names_a_1', 'Álma', 'van Voorbeeld, Anders', 'day', true, ''],
+  ['names_a', 'names_a_2', 'Beau', 'van Voorbeeld, Anders', 'day', true, ''],
+  ['names_b', 'names_b_1', 'Céline', 'van Voorbeeld', 'evening', true, ''],
+  ['names_pending', 'names_pending_1', 'Dani?', '', '', false, 'Uitnodiging controleren'],
+  ['names_ambiguous_a', 'names_ambiguous_a_1', 'Robin', '', 'day', false, 'Achternaam nodig'],
+  ['names_ambiguous_b', 'names_ambiguous_b_1', 'Robin', '', 'day', false, 'Achternaam nodig'],
+];
+const setRosterRows = (rows) => {
+  if (rosterSheet.getLastRow() > 1) rosterSheet.getRange(2, 1, rosterSheet.getLastRow() - 1, 7).clearContent();
+  rosterSheet.getRange(2, 1, rows.length, 7).setValues(rows);
+};
+setRosterRows(rosterRows);
+const expectedRosterCounts = { readyGroups: 2, readyGuests: 3, changedGroups: 2, excludedGroups: 3, excludedGuests: 3 };
+assert.deepEqual(hostValue(run('previewGuestRosterImport()')), expectedRosterCounts);
+assert.throws(() => run('importGuestRoster()'), /Pause writes/);
+const duplicateGuestRoster = structuredClone(rosterRows);
+duplicateGuestRoster[1][1] = duplicateGuestRoster[0][1];
+setRosterRows(duplicateGuestRoster);
+assert.throws(() => run('previewGuestRosterImport()'), /guest IDs must be unique/);
+setRosterRows(rosterRows);
+rosterSheet.setCell(2, 3, '=IMPORTXML("https://example.invalid")');
+assert.throws(() => run('previewGuestRosterImport()'), /not formulas/);
+setRosterRows(rosterRows);
+properties.set('RSVP_CLOSE_AT', '2026-08-28T00:00:00Z');
+const pendingImportRow = spreadsheet.getSheetByName('Idempotency').getLastRow() + 1;
+spreadsheet.getSheetByName('Idempotency').getRange(pendingImportRow, 1, 1, spreadsheet.getSheetByName('Idempotency').rows[0].length).setValues([
+  spreadsheet.getSheetByName('Idempotency').rows[0].map((header) => ({ operation: 'submit', status: 'pending' })[header] || ''),
+]);
+assert.throws(() => run('importGuestRoster()'), /pending submit intents/);
+spreadsheet.getSheetByName('Idempotency').getRange(pendingImportRow, 1, 1, spreadsheet.getSheetByName('Idempotency').rows[0].length).clearContent();
+failBeforeRangeWrite('GuestDetails', 2, 1);
+assert.throws(() => run('importGuestRoster()'), /Injected range-write failure/);
+assert.equal(properties.has('NAME_ROSTER_IMPORT_PENDING'), true);
+assert.equal(rowsMatching('Invitations', 'householdId', 'names_a')[0].values.active, false);
+assert.equal(directorySheet.getLastRow(), 1);
+rosterSheet.setCell(2, 3, 'Andere');
+assert.throws(() => run('importGuestRoster()'), /unchanged GuestRoster/);
+setRosterRows(rosterRows);
+assert.deepEqual(hostValue(run('importGuestRoster()')), expectedRosterCounts);
+assert.equal(properties.has('NAME_ROSTER_IMPORT_PENDING'), false);
+assert.equal(rowsMatching('Invitations', 'householdId', 'names_pending').length, 0);
+assert.equal(rowsMatching('Invitations', 'householdId', 'names_a')[0].values.tokenHash, '');
+assert.equal(rowsMatching('Invitations', 'householdId', 'names_a')[0].values.accessCodeHash, '');
+const unchangedImportData = JSON.stringify([...spreadsheet.sheets].map(([name, sheet]) => [name, sheet.rows]));
+assert.deepEqual(hostValue(run('importGuestRoster()')), { ...expectedRosterCounts, changedGroups: 0 });
+assert.equal(JSON.stringify([...spreadsheet.sheets].map(([name, sheet]) => [name, sheet.rows])), unchangedImportData);
+properties.set('NAME_LOOKUP_ENABLED', 'true');
+properties.set('RSVP_CLOSE_AT', '2099-01-01T00:00:00+01:00');
+const nameSearchEnvelope = makeEnvelope('search', { query: '  alma  ' });
+assert.deepEqual(post(nameSearchEnvelope).data, {
+  matches: [{ householdId: 'names_a', displayName: 'Álma & Beau — van Voorbeeld / Anders' }], tooMany: false,
+});
+assert.equal(post(nameSearchEnvelope).error.code, 'RATE_LIMITED');
+assert.equal(post(makeEnvelope('search', { query: 'ALMA ANDERS' })).data.matches[0].householdId, 'names_a');
+assert.equal(post(makeEnvelope('search', { query: 'Celine' })).data.matches[0].householdId, 'names_b');
+assert.equal(post(makeEnvelope('search', { query: 'van voor' })).data.matches.length, 2);
+assert.equal(post(makeEnvelope('search', { query: 'Dani' })).data.matches.length, 0);
+assert.equal(post(makeEnvelope('search', { query: 'Robin' })).data.matches.length, 0);
+for (const query of ['a', '12', 'Alma?', 'Al\nma', 'a'.repeat(81)]) {
+  assert.equal(post(makeEnvelope('search', { query })).error.code, 'INVITATION_INVALID');
+}
+assert.equal(post(makeEnvelope('search', { query: 'Alma', householdId: 'names_a' })).error.code, 'WRITER_BUSY');
+const searchMarkers = rowsMatching('Idempotency', 'operation', 'search');
+assert.equal(JSON.stringify(searchMarkers).includes('alma'), false);
+assert.equal(searchMarkers.every((row) => row.values.payloadHash === '' && row.values.responseJson === ''), true);
+assert.equal(post(makeEnvelope('resolve', { nameHouseholdId: 'names_a', accessCodeHash })).error.code, 'INVITATION_INVALID');
+const initialNameResolve = post(makeEnvelope('resolve', { nameHouseholdId: 'names_a' }));
+assert.equal(initialNameResolve.ok, true);
+assert.equal(initialNameResolve.data.currentRsvp, null);
+assert.deepEqual(initialNameResolve.data.guests.map((guest) => guest.displayName), ['Álma', 'Beau']);
+const nameSubmitData = {
+  nameHouseholdId: 'names_a', idempotencyKey: randomUUID(), revision: 0, attending: true,
+  guests: [{ guestId: 'names_a_1', attending: true, mealChoice: 'vegan' }, { guestId: 'names_a_2', attending: false }],
+};
+const nameSubmit = post(makeEnvelope('submit', nameSubmitData));
+assert.equal(nameSubmit.ok, true);
+assert.equal(nameSubmit.data.revision, 1);
+assert.deepEqual(post(makeEnvelope('submit', nameSubmitData)).data, nameSubmit.data);
+const existingNameReply = post(makeEnvelope('resolve', { nameHouseholdId: 'names_a' }));
+assert.equal(existingNameReply.data.currentRsvp.guests[0].mealChoice, 'vegan');
+const updatedNameData = { ...nameSubmitData, idempotencyKey: randomUUID(), revision: 1,
+  guests: [{ guestId: 'names_a_1', attending: true, mealChoice: 'fish' }, { guestId: 'names_a_2', attending: true, mealChoice: 'vegetarian' }] };
+const updatedNameReply = post(makeEnvelope('submit', updatedNameData));
+assert.equal(updatedNameReply.ok, true);
+assert.equal(updatedNameReply.data.revision, 2);
+assert.equal(updatedNameReply.data.receiptNumber, nameSubmit.data.receiptNumber);
+const nameDirectoryRow = rowsMatching('NameDirectory', 'householdId', 'names_a')[0].rowNumber;
+directorySheet.setCell(nameDirectoryRow, 4, false);
+assert.equal(post(makeEnvelope('resolve', { nameHouseholdId: 'names_a' })).error.code, 'INVITATION_INVALID');
+assert.equal(post(makeEnvelope('submit', updatedNameData)).error.code, 'INVITATION_INVALID');
+directorySheet.setCell(nameDirectoryRow, 4, true);
+const nameInvitationRow = rowsMatching('Invitations', 'householdId', 'names_a')[0].rowNumber;
+invitationSheet.setCell(nameInvitationRow, 8, false);
+assert.equal(post(makeEnvelope('submit', updatedNameData)).error.code, 'INVITATION_INVALID');
+invitationSheet.setCell(nameInvitationRow, 8, true);
+properties.set('NAME_LOOKUP_ENABLED', 'false');
+assert.equal(post(makeEnvelope('submit', updatedNameData)).error.code, 'INVITATION_INVALID');
+properties.set('RSVP_CLOSE_AT', '2026-08-28T00:00:00Z');
+assert.deepEqual(hostValue(run('importGuestRoster()')), { ...expectedRosterCounts, changedGroups: 0 });
+// Name access may be revoked independently while legacy invitation access stays active.
+directorySheet.setCell(nameDirectoryRow, 4, false);
+assert.equal(invitationSheet.getCell(nameInvitationRow, 8), true);
+const revokedNameRosterSnapshot = JSON.stringify([...spreadsheet.sheets].map(([name, sheet]) => [name, sheet.rows]));
+assert.throws(() => run('previewGuestRosterImport()'), /cannot reactivate revoked name access/);
+assert.throws(() => run('importGuestRoster()'), /cannot reactivate revoked name access/);
+assert.equal(JSON.stringify([...spreadsheet.sheets].map(([name, sheet]) => [name, sheet.rows])), revokedNameRosterSnapshot);
+assert.equal(properties.has('NAME_ROSTER_IMPORT_PENDING'), false);
+directorySheet.setCell(nameDirectoryRow, 4, true); // Explicit operator reactivation, never an import side effect.
+const changedAnsweredRoster = structuredClone(rosterRows);
+changedAnsweredRoster[0][3] = 'Gewijzigd';
+changedAnsweredRoster[1][3] = 'Gewijzigd';
+setRosterRows(changedAnsweredRoster);
+const replyBeforeRejectedRoster = JSON.stringify(rowsMatching('Responses', 'householdId', 'names_a'));
+const answerStateBeforeNameCorrection = rowsMatching('GuestDetails', 'householdId', 'names_a')
+  .map((row) => ({ ...row.values, displayName: undefined }));
+const invitationTimestampBeforeNameCorrection = rowsMatching('Invitations', 'householdId', 'names_a')[0].values.updatedAt;
+// In contrast, a matching unfinished import may restore the directory it deliberately disabled.
+failBeforeRangeWrite('NameDirectory', nameDirectoryRow, 1);
+assert.throws(() => run('importGuestRoster()'), /Injected range-write failure/);
+assert.equal(directorySheet.getCell(nameDirectoryRow, 4), false);
+assert.equal(properties.has('NAME_ROSTER_IMPORT_PENDING'), true);
+assert.equal(hostValue(run('importGuestRoster()')).changedGroups, 1);
+assert.equal(directorySheet.getCell(nameDirectoryRow, 4), true);
+assert.equal(properties.has('NAME_ROSTER_IMPORT_PENDING'), false);
+assert.equal(JSON.stringify(rowsMatching('Responses', 'householdId', 'names_a')), replyBeforeRejectedRoster);
+assert.deepEqual(rowsMatching('GuestDetails', 'householdId', 'names_a')
+  .map((row) => ({ ...row.values, displayName: undefined })), answerStateBeforeNameCorrection);
+assert.equal(rowsMatching('Invitations', 'householdId', 'names_a')[0].values.updatedAt, invitationTimestampBeforeNameCorrection);
+properties.set('NAME_LOOKUP_ENABLED', 'true');
+properties.set('RSVP_CLOSE_AT', '2099-01-01T00:00:00+01:00');
+assert.deepEqual(post(makeEnvelope('submit', updatedNameData)).data, updatedNameReply.data);
+assert.match(post(makeEnvelope('resolve', { nameHouseholdId: 'names_a' })).data.displayName, /Gewijzigd/u);
+properties.set('NAME_LOOKUP_ENABLED', 'false');
+properties.set('RSVP_CLOSE_AT', '2026-08-28T00:00:00Z');
+setRosterRows(rosterRows);
+assert.equal(hostValue(run('importGuestRoster()')).changedGroups, 1);
+setRosterRows([...rosterRows, ['names_a', 'names_a_3', 'Extra', 'van Voorbeeld, Anders', 'day', true, '']]);
+assert.throws(() => run('importGuestRoster()'), /answered group cannot change membership/);
+setRosterRows(rosterRows.slice(1));
+assert.throws(() => run('importGuestRoster()'), /cannot remove/);
+setRosterRows([...rosterRows, ['new_wrong_id', 'new_wrong_guest_id', 'Céline', 'van Voorbeeld', 'evening', true, '']]);
+assert.throws(() => run('importGuestRoster()'), /identical labels|another ID/);
+// Collision against an existing Invitation without any NameDirectory row also blocks implicit remapping.
+setRosterRows([['unknown_id', 'unknown_guest', 'Álma', 'van Voorbeeld, Anders', 'day', true, '']]);
+invitationSheet.getRange(invitationSheet.getLastRow() + 1, 1, 1, invitationHeaders.length).setValues([[
+  'preexisting_collision', tokenHash, '', 'Álma — van Voorbeeld / Anders', 'day', true, 1, true, 0,
+  new FixedDate().toISOString(), new FixedDate().toISOString(),
+]]);
+assert.throws(() => run('previewGuestRosterImport()'), /another ID/);
+const nineGroups = ['Alfa', 'Bravo', 'Charlie', 'Delta', 'Echo', 'Foxtrot', 'Golf', 'Hotel', 'India']
+  .map((name, index) => [`extra_${index}`, `extra_guest_${index}`, `Voorbeeld ${name}`, '', 'evening', true, '']);
+setRosterRows([...rosterRows, ...nineGroups]);
+assert.equal(hostValue(run('importGuestRoster()')).changedGroups, 9);
+assert.equal(JSON.stringify(rowsMatching('Responses', 'householdId', 'names_a')), replyBeforeRejectedRoster);
+properties.set('NAME_LOOKUP_ENABLED', 'true');
+assert.equal(post(makeEnvelope('search', { query: 'Voorbeeld' })).error.code, 'RSVP_CLOSED');
+properties.set('RSVP_CLOSE_AT', '2099-01-01T00:00:00+01:00');
+assert.deepEqual(post(makeEnvelope('search', { query: 'Voorbeeld' })).data, { matches: [], tooMany: true });
+const eveningNameResolve = post(makeEnvelope('resolve', { nameHouseholdId: 'names_b' }));
+assert.equal(eveningNameResolve.data.mealChoiceRequired, false);
+const eveningNameData = { nameHouseholdId: 'names_b', idempotencyKey: randomUUID(), revision: 0,
+  attending: true, guests: [{ guestId: 'names_b_1', attending: true }], email: 'naam-gast@example.test' };
+properties.set('CONFIRMATION_EMAIL_ENABLED', 'true');
+properties.set('CONFIRMATION_EMAIL_ACTIVATED_AT', new FixedDate(TEST_NOW_MILLISECONDS - 1000).toISOString());
+queueUrlFetchResponse(200, { id: randomUUID() });
+const eveningNameSubmit = post(makeEnvelope('submit', eveningNameData));
+assert.equal(eveningNameSubmit.ok, true);
+const nameMail = rowsMatching('EmailOutbox', 'idempotencyKey', eveningNameData.idempotencyKey)[0];
+assert.equal(nameMail.values.templateVersion, 'rsvp_confirmation_names_v2');
+const nameEmailPayload = JSON.parse(urlFetch.requests.at(-1).options.payload);
+assert.match(nameEmailPayload.text, /Zoek opnieuw op je voornaam of achternaam/u);
+assert.doesNotMatch(nameEmailPayload.text, /huishoudcode|persoonlijke.*code|uitnodigingslink/u);
+// Global name lookup must not tell a legacy-only guest to use an unavailable name route.
+assert.equal(run("currentConfirmationTemplate_(getReadySpreadsheet_(), 'names_b')"), 'rsvp_confirmation_names_v2');
+assert.equal(run("currentConfirmationTemplate_(getReadySpreadsheet_(), 'preexisting_collision')"), 'rsvp_confirmation_v1');
+const legacyOnlyGuestSheet = spreadsheet.getSheetByName('GuestDetails');
+legacyOnlyGuestSheet.getRange(legacyOnlyGuestSheet.getLastRow() + 1, 1, 1, 7).setValues([
+  ['preexisting_collision', 'legacy_name_test_guest', 'Gast zonder naamzoekroute', '', '', 0, ''],
+]);
+queueUrlFetchResponse(200, { id: randomUUID() });
+const legacyOnlyMailData = { tokenHash, idempotencyKey: randomUUID(), revision: 0,
+  attending: true, guests: [{ guestId: 'legacy_name_test_guest', attending: true, mealChoice: 'fish' }],
+  email: 'legacy-gast@example.test' };
+assert.equal(post(makeEnvelope('submit', legacyOnlyMailData)).ok, true);
+const legacyOnlyOutbox = rowsMatching('EmailOutbox', 'idempotencyKey', legacyOnlyMailData.idempotencyKey)[0];
+assert.equal(legacyOnlyOutbox.values.templateVersion, 'rsvp_confirmation_v1');
+assert.match(JSON.parse(urlFetch.requests.at(-1).options.payload).text, /persoonlijke huishoudcode/u);
+context.__nameReconcileKey = eveningNameData.idempotencyKey;
+context.__legacyReconcileKey = legacyOnlyMailData.idempotencyKey;
+const templateFromReconcilePlan = (contextKey) => hostValue(run(`(() => {
+  const sheet = getReadySpreadsheet_();
+  const completed = findUniqueRow_(sheet.getSheetByName('Idempotency'), 'idempotencyKey', ${contextKey});
+  const intent = readAndValidateSubmitIntent_(completed);
+  const response = responseStateFromValues_(findUniqueRow_(sheet.getSheetByName('Responses'), 'householdId', intent.householdId).values);
+  return buildConfirmationEmailOutboxPlan_(completed, intent, response, new Map(), sheet).values.templateVersion;
+})()`));
+assert.equal(templateFromReconcilePlan('__nameReconcileKey'), 'rsvp_confirmation_names_v2');
+assert.equal(templateFromReconcilePlan('__legacyReconcileKey'), 'rsvp_confirmation_v1');
+// A later mode switch must never rewrite an already queued/sent v1 payload or MAC.
+const immutableLegacyOutbox = JSON.stringify(legacyOnlyOutbox.values);
+run('reconcileConfirmationEmailOutbox_()');
+assert.equal(JSON.stringify(rowsMatching('EmailOutbox', 'idempotencyKey', legacyOnlyMailData.idempotencyKey)[0].values), immutableLegacyOutbox);
+context.__oldTemplateClaim = { recipientEmail: 'naam-gast@example.test', receiptNumber: 'RSVP-ABC123', templateVersion: 'rsvp_confirmation_v1' };
+assert.match(hostValue(run('renderConfirmationEmail_(__oldTemplateClaim)')).text, /persoonlijke huishoudcode/u);
+properties.set('CONFIRMATION_EMAIL_ENABLED', 'false');
+properties.set('NAME_LOOKUP_ENABLED', 'false');
+testNowMilliseconds = Date.parse('2027-05-22T22:00:00.000Z');
+const namedClearPreview = hostValue(run('previewRsvpSheetClear()'));
+assert.equal(namedClearPreview.rowCounts.GuestRoster > 0, true);
+assert.equal(namedClearPreview.rowCounts.NameDirectory > 0, true);
+properties.set('RSVP_SHEET_CLEAR_CONFIRMATION', namedClearPreview.confirmationValue);
+run('clearRsvpSheetDataWithConfirmation()');
+assert.equal(rosterSheet.getLastRow(), 1);
+assert.equal(directorySheet.getLastRow(), 1);
+
 const manifest = JSON.parse(readFileSync(fileURLToPath(new URL('./appsscript.json', import.meta.url)), 'utf8'));
 assert.equal(manifest.oauthScopes.some((scope) => /gmail|mail\.google/u.test(scope)), false);
 assert.equal(

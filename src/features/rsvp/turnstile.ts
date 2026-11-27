@@ -1,4 +1,4 @@
-export type TurnstileAction = 'rsvp_resolve' | 'rsvp_submit';
+export type TurnstileAction = 'rsvp_search' | 'rsvp_resolve' | 'rsvp_submit';
 
 interface TurnstileApi {
   render: (

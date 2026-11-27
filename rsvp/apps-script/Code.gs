@@ -23,7 +23,8 @@ const EMAIL_CLAIM_LEASE_MILLISECONDS_ = 60 * 1000;
 const EMAIL_OUTBOX_BATCH_SIZE_ = 20;
 const EMAIL_PROVIDER_URL_ = 'https://api.resend.com/emails';
 const CURRENT_EMAIL_TEMPLATE_VERSION_ = 'rsvp_confirmation_v1';
-const SUPPORTED_EMAIL_TEMPLATE_VERSIONS_ = new Set(['rsvp_confirmation_v1']);
+const SUPPORTED_EMAIL_TEMPLATE_VERSIONS_ = new Set(['rsvp_confirmation_v1', 'rsvp_confirmation_names_v2']);
+const NAME_SHEETS_ = Object.freeze(['GuestRoster', 'NameDirectory']);
 
 const REQUEST_ID_PATTERN_ = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const IDEMPOTENCY_KEY_PATTERN_ = REQUEST_ID_PATTERN_;
@@ -62,6 +63,8 @@ const SHEETS_ = Object.freeze({
 });
 
 const HEADERS_ = Object.freeze({
+  GuestRoster: ['householdId', 'guestId', 'firstName', 'familyNames', 'invitationVariant', 'searchEnabled', 'reviewNote'],
+  NameDirectory: ['householdId', 'displayName', 'searchNames', 'active'],
   Invitations: [
     'householdId',
     'tokenHash',
@@ -150,6 +153,8 @@ const HEADERS_ = Object.freeze({
 });
 
 const TEXT_COLUMNS_ = Object.freeze({
+  GuestRoster: ['householdId', 'guestId', 'firstName', 'familyNames', 'invitationVariant', 'reviewNote'],
+  NameDirectory: ['householdId', 'displayName', 'searchNames'],
   Invitations: ['householdId', 'tokenHash', 'accessCodeHash', 'displayName', 'invitationVariant'],
   Responses: ['responseId', 'receiptNumber', 'householdId', 'email', 'message'],
   GuestDetails: ['householdId', 'guestId', 'displayName', 'mealChoice'],
@@ -384,7 +389,7 @@ function clearRsvpSheetDataWithConfirmation() {
       throw new Error('RSVP_SHEET_CLEAR_CONFIRMATION does not match the Sheet-clear preview.');
     }
 
-    for (const sheetName of Object.values(SHEETS_)) {
+    for (const sheetName of rsvpDataSheetNames_(spreadsheet)) {
       const sheet = spreadsheet.getSheetByName(sheetName);
       const dataRows = Math.max(0, sheet.getLastRow() - 1);
       if (dataRows > 0) {
@@ -395,6 +400,7 @@ function clearRsvpSheetDataWithConfirmation() {
     SpreadsheetApp.flush();
     const clearedAt = new Date().toISOString();
     properties.deleteProperty('RSVP_SHEET_CLEAR_CONFIRMATION');
+    properties.deleteProperty('NAME_ROSTER_IMPORT_PENDING');
     properties.setProperty('LAST_RSVP_SHEET_CLEAR_AT', clearedAt);
     return {
       environment: preview.environment,
@@ -560,7 +566,7 @@ function ensureConfirmationEmailOutboxRow_(spreadsheet, completedRow) {
     deliveryId,
     idempotencyKey: intent.idempotencyKey,
     submitIntentMac: String(completedRow.values.intentMac),
-    templateVersion: CURRENT_EMAIL_TEMPLATE_VERSION_,
+    templateVersion: currentConfirmationTemplate_(spreadsheet, intent.householdId),
     recipientEmail: intent.response.email,
     receiptNumber: intent.result.receiptNumber,
     revision: intent.result.revision,
@@ -592,7 +598,7 @@ function ensureConfirmationEmailOutboxRow_(spreadsheet, completedRow) {
   return deliveryId;
 }
 
-function buildConfirmationEmailOutboxPlan_(completedRow, intent, currentResponse, existingByDeliveryId) {
+function buildConfirmationEmailOutboxPlan_(completedRow, intent, currentResponse, existingByDeliveryId, spreadsheet) {
   if (Date.now() >= Date.parse(RETENTION_DELETE_BY_)) return null;
   const activationIso = getConfirmationEmailActivationIso_();
   const submitCreatedAt = intent.result.savedAt;
@@ -622,7 +628,7 @@ function buildConfirmationEmailOutboxPlan_(completedRow, intent, currentResponse
     deliveryId,
     idempotencyKey: intent.idempotencyKey,
     submitIntentMac: String(completedRow.values.intentMac),
-    templateVersion: CURRENT_EMAIL_TEMPLATE_VERSION_,
+    templateVersion: currentConfirmationTemplate_(spreadsheet, intent.householdId),
     recipientEmail: intent.response.email,
     receiptNumber: intent.result.receiptNumber,
     revision: intent.result.revision,
@@ -789,6 +795,7 @@ function reconcileConfirmationEmailOutbox_() {
         entry.intent,
         entry.response,
         outboxByDeliveryId,
+        spreadsheet,
       ))
       .filter((plan) => plan !== null);
     const newPlans = enqueuePlans.filter((plan) => plan.values !== null);
@@ -1134,7 +1141,48 @@ function renderConfirmationEmail_(claim) {
   if (claim.templateVersion === 'rsvp_confirmation_v1') {
     return renderConfirmationEmailV1_(claim);
   }
+  if (claim.templateVersion === 'rsvp_confirmation_names_v2') {
+    return renderConfirmationEmailNamesV2_(claim);
+  }
   throw new Error('Confirmation email template version is unsupported.');
+}
+
+function currentConfirmationTemplate_(spreadsheet, householdId) {
+  if (!nameLookupEnabled_() || !spreadsheet.getSheetByName('NameDirectory')) {
+    return CURRENT_EMAIL_TEMPLATE_VERSION_;
+  }
+  const directory = assertNameSheet_(spreadsheet, 'NameDirectory');
+  const row = findUniqueRow_(directory, 'householdId', householdId);
+  if (!row || !parseNameDirectoryRow_(row).active) return CURRENT_EMAIL_TEMPLATE_VERSION_;
+  const invitation = findUniqueRow_(spreadsheet.getSheetByName(SHEETS_.invitations), 'householdId', householdId);
+  return invitation && asBooleanStrict_(invitation.values.active)
+    ? 'rsvp_confirmation_names_v2' : CURRENT_EMAIL_TEMPLATE_VERSION_;
+}
+
+// Immutable v2: pending v1 messages keep their original byte-identical renderer.
+function renderConfirmationEmailNamesV2_(claim) {
+  const siteUrl = 'https://lisetteenbjarty.nl/#rsvp';
+  const text = [
+    'Hallo,', '', 'Je RSVP voor de bruiloft van Lisette & Bjarty is opgeslagen.', '',
+    `Bevestigingsnummer: ${claim.receiptNumber}`, '',
+    `Je kunt je reactie tot en met 10 april 2027 aanpassen via ${siteUrl}`,
+    'Zoek opnieuw op je voornaam of achternaam en kies jullie groep.',
+    'Je hoeft geen code of bevestigingsnummer in te vullen.', '',
+    'Hartelijke groet,', 'Lisette & Bjarty',
+  ].join('\n');
+  return {
+    from: 'Lisette & Bjarty <rsvp@lisetteenbjarty.nl>',
+    to: [claim.recipientEmail],
+    subject: 'Je RSVP is opgeslagen',
+    text,
+    html: '<p>Hallo,</p><p>Je RSVP voor de bruiloft van Lisette &amp; Bjarty is opgeslagen.</p>'
+      + `<p><strong>Bevestigingsnummer:</strong> ${escapeHtml_(claim.receiptNumber)}</p>`
+      + `<p>Je kunt je reactie tot en met 10 april 2027 aanpassen via <a href="${siteUrl}">${siteUrl}</a>. `
+      + 'Zoek opnieuw op je voornaam of achternaam en kies jullie groep. '
+      + 'Je hoeft geen code of bevestigingsnummer in te vullen.</p>'
+      + '<p>Hartelijke groet,<br>Lisette &amp; Bjarty</p>',
+    reply_to: 'rsvp@lisetteenbjarty.nl',
+  };
 }
 
 // Immutable renderer: add a new version instead of changing this payload.
@@ -1517,6 +1565,362 @@ function escapeHtml_(value) {
     .replace(/'/g, '&#39;');
 }
 
+function nameLookupEnabled_() {
+  return PropertiesService.getScriptProperties().getProperty('NAME_LOOKUP_ENABLED') === 'true';
+}
+
+function assertNameLookupEnabled_() {
+  if (!nameLookupEnabled_()) throw new ApiError_('INVITATION_INVALID');
+}
+
+function rsvpDataSheetNames_(spreadsheet) {
+  const optional = NAME_SHEETS_.filter((name) => spreadsheet.getSheetByName(name));
+  for (const name of optional) assertNameSheet_(spreadsheet, name);
+  return Object.values(SHEETS_).concat(optional);
+}
+
+function assertNameSheet_(spreadsheet, name) {
+  const sheet = spreadsheet.getSheetByName(name);
+  if (!sheet || !arraysEqual_(sheet.getRange(1, 1, 1, HEADERS_[name].length).getDisplayValues()[0], HEADERS_[name])) {
+    throw new Error('Name lookup sheet has missing or unexpected headers.');
+  }
+  if (sheet.getLastRow() > 2001) throw new Error('Name lookup sheet exceeds its bounded capacity.');
+  return sheet;
+}
+
+function normalizeNameSearch_(value) {
+  return value.normalize('NFD').replace(/\p{M}/gu, '').toLocaleLowerCase('nl-NL')
+    .replace(/[’']/g, '').replace(/[.\-]/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+function validateNameQuery_(data) {
+  assertExactKeys_(data, ['query']);
+  if (typeof data.query !== 'string') throw new ApiError_('INVITATION_INVALID');
+  const query = data.query.normalize('NFC').trim();
+  if (query.length < 2 || query.length > 80 || !/^[\p{L}\p{M} .’'\-]+$/u.test(query)
+      || (query.match(/\p{L}/gu) || []).length < 2) {
+    throw new ApiError_('INVITATION_INVALID');
+  }
+  return normalizeNameSearch_(query);
+}
+
+function parseNameDirectoryRow_(row) {
+  const value = row.values;
+  const householdId = normalizeOpaqueId_(value.householdId);
+  const displayName = normalizeStoredDisplayName_(value.displayName);
+  const searchNames = JSON.parse(String(value.searchNames));
+  if (!Array.isArray(searchNames) || searchNames.length < 1 || searchNames.length > 100
+      || searchNames.some((name) => typeof name !== 'string' || !name.trim() || name.length > 160)) {
+    throw new Error('Name lookup search names are invalid.');
+  }
+  return { householdId, displayName, searchNames, active: asBooleanStrict_(value.active) };
+}
+
+function getActiveNameDirectoryEntry_(spreadsheet, householdId) {
+  const sheet = assertNameSheet_(spreadsheet, 'NameDirectory');
+  const row = findUniqueRow_(sheet, 'householdId', normalizeOpaqueId_(householdId));
+  if (!row) throw new ApiError_('INVITATION_INVALID');
+  const entry = parseNameDirectoryRow_(row);
+  if (!entry.active) throw new ApiError_('INVITATION_INVALID');
+  return entry;
+}
+
+function searchNameDirectory_(data, envelope) {
+  assertNameLookupEnabled_();
+  const query = validateNameQuery_(data);
+  return withScriptLock_(() => {
+    assertRsvpOpen_();
+    const spreadsheet = getReadySpreadsheet_();
+    const sheet = assertNameSheet_(spreadsheet, 'NameDirectory');
+    rejectReplayedRequestId_(spreadsheet, envelope.requestId);
+    const ids = new Set();
+    const labels = new Set();
+    const matches = [];
+    for (const row of readAllObjectRows_(sheet)) {
+      if (Object.values(row.values).every((value) => value === '' || value === null)) continue;
+      const entry = parseNameDirectoryRow_(row);
+      if (ids.has(entry.householdId)) throw new Error('Name lookup group ID is duplicated.');
+      ids.add(entry.householdId);
+      if (!entry.active) continue;
+      const normalizedLabel = normalizeNameSearch_(entry.displayName);
+      if (labels.has(normalizedLabel)) throw new Error('Active name lookup labels are ambiguous.');
+      labels.add(normalizedLabel);
+      if (!entry.searchNames.some((name) => normalizeNameSearch_(name).includes(query))) continue;
+      const invitation = findUniqueRow_(spreadsheet.getSheetByName(SHEETS_.invitations), 'householdId', entry.householdId);
+      if (!invitation || !asBooleanStrict_(invitation.values.active)) continue;
+      const guests = getPresetGuests_(spreadsheet, entry.householdId);
+      assertGuestCapacity_(guests, asInteger_(invitation.values.maxGuests, 1, 20));
+      // Group labels only; replies, addresses, email and meal choices are never search data.
+      matches.push({ householdId: entry.householdId, displayName: entry.displayName });
+    }
+    // Store no query, names or search results. A request marker prevents signed-envelope replay.
+    appendIdempotencyRow_(spreadsheet, {
+      requestId: envelope.requestId, operation: 'search', status: 'observed',
+      requestTimestamp: new Date(envelope.timestamp * 1000), createdAt: new Date(), updatedAt: new Date(),
+      expiresAt: new Date(RETENTION_DELETE_BY_),
+    });
+    SpreadsheetApp.flush();
+    if (matches.length > 8) return { matches: [], tooMany: true };
+    matches.sort((left, right) => left.displayName.localeCompare(right.displayName, 'nl'));
+    return { matches, tooMany: false };
+  });
+}
+
+/** Adds two private management tabs without changing the existing RSVP schema. */
+function initNameLookupSheets() {
+  return withScriptLock_(() => {
+    const spreadsheet = getReadySpreadsheet_();
+    for (const name of NAME_SHEETS_) {
+      const headers = HEADERS_[name];
+      let sheet = spreadsheet.getSheetByName(name);
+      if (!sheet) sheet = spreadsheet.insertSheet(name);
+      ensureColumnCapacity_(sheet, headers.length);
+      const current = sheet.getRange(1, 1, 1, headers.length).getDisplayValues()[0];
+      if (current.every((value) => value === '') && sheet.getLastRow() <= 1) {
+        sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
+      } else if (!arraysEqual_(current, headers)) {
+        throw new Error('Name lookup tab already exists with incompatible headers.');
+      }
+      setTextColumnFormats_(sheet, headers, TEXT_COLUMNS_[name]);
+      sheet.setFrozenRows(1);
+      sheet.autoResizeColumns(1, headers.length);
+    }
+    SpreadsheetApp.flush();
+    return { initialized: NAME_SHEETS_.slice() };
+  });
+}
+
+function uniqueRowsById_(rows, field) {
+  const result = new Map();
+  for (const row of rows) {
+    if (Object.values(row.values).every((value) => value === '' || value === null)) continue;
+    const key = normalizeOpaqueId_(row.values[field]);
+    if (result.has(key)) throw new Error('Roster import found duplicate stored IDs.');
+    result.set(key, row);
+  }
+  return result;
+}
+
+function guestRosterImportPlan_(spreadsheet) {
+  const sheet = assertNameSheet_(spreadsheet, 'GuestRoster');
+  const directorySheet = assertNameSheet_(spreadsheet, 'NameDirectory');
+  const rows = readAllObjectRows_(sheet).filter((row) => !Object.values(row.values).every((value) => value === '' || value === null));
+  if (!rows.length) throw new Error('GuestRoster is empty.');
+  if (sheet.getRange(2, 1, sheet.getLastRow() - 1, HEADERS_.GuestRoster.length).getFormulas()
+    .some((row) => row.some((value) => value !== ''))) throw new Error('GuestRoster must contain values, not formulas.');
+  const fingerprint = sha256Hex_(JSON.stringify(rows.map((row) => row.values)));
+  const pendingRaw = PropertiesService.getScriptProperties().getProperty('NAME_ROSTER_IMPORT_PENDING');
+  const pending = pendingRaw ? parseJsonObject_(pendingRaw) : null;
+  if (pending && (pending.fingerprint !== fingerprint || !Array.isArray(pending.householdIds))) {
+    throw new Error('Resume the pending import using the unchanged GuestRoster before editing it.');
+  }
+  const groups = new Map();
+  const guestIds = new Set();
+  for (const row of rows) {
+    const value = row.values;
+    const householdId = normalizeOpaqueId_(value.householdId);
+    const guestId = normalizeOpaqueId_(value.guestId);
+    if (guestIds.has(guestId)) throw new Error('GuestRoster guest IDs must be unique.');
+    guestIds.add(guestId);
+    const firstName = normalizeOptionalString_(String(value.firstName || ''), 160);
+    const familyNames = normalizeOptionalString_(String(value.familyNames || ''), 500);
+    const variant = String(value.invitationVariant || '').trim();
+    const enabled = asBooleanStrict_(value.searchEnabled);
+    const note = normalizeOptionalString_(String(value.reviewNote || ''), 1000);
+    if (!groups.has(householdId)) groups.set(householdId, { householdId, members: [], familyNames, variant, eligible: true });
+    const group = groups.get(householdId);
+    if (group.familyNames !== familyNames || group.variant !== variant) {
+      throw new Error('Every member of a group must have the same family aliases and invitation variant.');
+    }
+    group.members.push({ guestId, displayName: firstName });
+    if (!enabled || note !== '' || firstName === '' || !INVITATION_VARIANTS_.has(variant)) group.eligible = false;
+  }
+  const invitations = uniqueRowsById_(readAllObjectRows_(spreadsheet.getSheetByName(SHEETS_.invitations)), 'householdId');
+  const guests = uniqueRowsById_(readAllObjectRows_(spreadsheet.getSheetByName(SHEETS_.guestDetails)), 'guestId');
+  const directory = uniqueRowsById_(readAllObjectRows_(directorySheet), 'householdId');
+  const labels = new Map();
+  for (const [id, row] of directory) {
+    if (!groups.get(id)?.eligible && asBooleanStrict_(row.values.active)) {
+      labels.set(normalizeNameSearch_(String(row.values.displayName)), id);
+    }
+  }
+  const plans = [];
+  let excludedGroups = 0;
+  let excludedGuests = 0;
+  for (const group of groups.values()) {
+    if (!group.eligible) {
+      excludedGroups += 1;
+      excludedGuests += group.members.length;
+      // Merely adding a review marker must not silently revoke a previously published group.
+      if (directory.has(group.householdId) && asBooleanStrict_(directory.get(group.householdId).values.active)) {
+        throw new Error('A previously searchable group needs review; disable it explicitly before importing.');
+      }
+      continue;
+    }
+    if (group.members.length > 20) throw new Error('A group exceeds twenty people.');
+    const aliases = group.familyNames.split(',').map((name) => name.trim()).filter(Boolean);
+    if (aliases.length > 10 || [...aliases, ...group.members.map((member) => member.displayName)]
+      .some((name) => name.length > 160 || !/^[\p{L}\p{M} .’'\-]+$/u.test(name))) {
+      throw new Error('An enabled name contains unsupported or tentative characters.');
+    }
+    const displayName = group.members.map((member) => member.displayName).join(' & ')
+      + (aliases.length ? ` — ${aliases.join(' / ')}` : '');
+    normalizeStoredDisplayName_(displayName);
+    const labelKey = normalizeNameSearch_(displayName);
+    if (labels.has(labelKey) && labels.get(labelKey) !== group.householdId) {
+      throw new Error('Enabled groups have identical labels; add distinguishing names before importing.');
+    }
+    labels.set(labelKey, group.householdId);
+    const searchNames = [...new Set([
+      ...group.members.map((member) => member.displayName), ...aliases,
+      ...group.members.flatMap((member) => aliases.map((alias) => `${member.displayName} ${alias}`)),
+    ])];
+    if (searchNames.length > 100) throw new Error('Group search aliases exceed the limit.');
+    const invitation = invitations.get(group.householdId);
+    if (!invitation && [...invitations.values()].some((row) =>
+      normalizeNameSearch_(String(row.values.displayName)) === labelKey)) {
+      throw new Error('A matching invitation label already exists under another ID; map the existing IDs explicitly.');
+    }
+    const directoryRow = directory.get(group.householdId);
+    const existingGuests = [...guests.values()].filter((row) => String(row.values.householdId) === group.householdId);
+    for (const member of group.members) {
+      const existing = guests.get(member.guestId);
+      if (existing && String(existing.values.householdId) !== group.householdId) {
+        throw new Error('A guest ID cannot move between groups.');
+      }
+    }
+    if (existingGuests.some((row) => !group.members.some((member) => member.guestId === String(row.values.guestId)))) {
+      throw new Error('An import cannot remove an existing guest.');
+    }
+    if (invitation && !asBooleanStrict_(invitation.values.active)
+        && !pending?.householdIds.includes(group.householdId)) {
+      throw new Error('An import cannot reactivate a revoked invitation.');
+    }
+    if (directoryRow && !asBooleanStrict_(directoryRow.values.active)
+        && !pending?.householdIds.includes(group.householdId)) {
+      throw new Error('An import cannot reactivate revoked name access.');
+    }
+    const changedGuests = group.members.some((member) => {
+      const existing = guests.get(member.guestId);
+      return !existing || String(existing.values.displayName) !== member.displayName;
+    });
+    const changedInvitation = !invitation || String(invitation.values.displayName) !== displayName
+      || String(invitation.values.invitationVariant) !== group.variant
+      || asBooleanStrict_(invitation.values.mealChoiceRequired) !== (group.variant === 'day')
+      || Number(invitation.values.maxGuests) !== group.members.length;
+    const changedMembershipOrPolicy = !invitation || existingGuests.length !== group.members.length
+      || String(invitation.values.invitationVariant) !== group.variant
+      || asBooleanStrict_(invitation.values.mealChoiceRequired) !== (group.variant === 'day')
+      || Number(invitation.values.maxGuests) !== group.members.length;
+    const hasResponses = Boolean(findUniqueRow_(spreadsheet.getSheetByName(SHEETS_.responses), 'householdId', group.householdId));
+    const answered = hasResponses || (invitation && Number(invitation.values.currentRevision) !== 0)
+      || existingGuests.some((row) => Number(row.values.revision) !== 0 || row.values.attending !== ''
+        || row.values.mealChoice !== '' || row.values.updatedAt !== '');
+    if (answered && changedMembershipOrPolicy) {
+      throw new Error('An answered group cannot change membership or invitation policy; use a separately reviewed migration.');
+    }
+    const changedDirectory = !directoryRow || String(directoryRow.values.displayName) !== displayName
+      || String(directoryRow.values.searchNames) !== JSON.stringify(searchNames) || !asBooleanStrict_(directoryRow.values.active);
+    plans.push({ ...group, displayName, searchNames, invitation, directoryRow, guests,
+      changed: changedGuests || changedInvitation || changedDirectory,
+      answered: Boolean(answered) });
+  }
+  return { plans, fingerprint, excludedGroups, excludedGuests };
+}
+
+function guestRosterSummary_(plan) {
+  return {
+    readyGroups: plan.plans.length,
+    readyGuests: plan.plans.reduce((total, group) => total + group.members.length, 0),
+    changedGroups: plan.plans.filter((group) => group.changed).length,
+    excludedGroups: plan.excludedGroups,
+    excludedGuests: plan.excludedGuests,
+  };
+}
+
+/** Read-only. Returns counts, never the private roster. */
+function previewGuestRosterImport() {
+  return withScriptLock_(() => guestRosterSummary_(guestRosterImportPlan_(getReadySpreadsheet_())));
+}
+
+/** Idempotent administrative import. A failed run remains closed and can be resumed unchanged. */
+function importGuestRoster() {
+  return withScriptLock_(() => {
+    const closeAt = Date.parse(getRequiredProperty_('RSVP_CLOSE_AT'));
+    if (!Number.isFinite(closeAt) || closeAt > Date.now() || nameLookupEnabled_()) {
+      throw new Error('Pause writes with RSVP_CLOSE_AT in the past and disable NAME_LOOKUP_ENABLED before importing.');
+    }
+    assertPendingRecoveryBeforeRetention_();
+    const spreadsheet = getReadySpreadsheet_();
+    if (findRows_(spreadsheet.getSheetByName(SHEETS_.idempotency), 'operation', 'submit')
+      .some((row) => row.values.status !== 'completed')) {
+      throw new Error('Recover all pending submit intents before importing a roster.');
+    }
+    const plan = guestRosterImportPlan_(spreadsheet);
+    const changed = plan.plans.filter((group) => group.changed);
+    const properties = PropertiesService.getScriptProperties();
+    const checkpoint = JSON.stringify({
+      fingerprint: plan.fingerprint, householdIds: changed.map((group) => group.householdId),
+    });
+    if (checkpoint.length > 8000) throw new Error('Roster import checkpoint is too large; use a smaller reviewed batch.');
+    properties.setProperty('NAME_ROSTER_IMPORT_PENDING', checkpoint);
+    const invitationSheet = spreadsheet.getSheetByName(SHEETS_.invitations);
+    const guestSheet = spreadsheet.getSheetByName(SHEETS_.guestDetails);
+    const directorySheet = spreadsheet.getSheetByName('NameDirectory');
+    for (const group of changed) {
+      if (group.directoryRow) directorySheet.getRange(group.directoryRow.rowNumber, 4).setValue(false);
+      if (group.invitation && !group.answered) invitationSheet.getRange(group.invitation.rowNumber, 8).setValue(false);
+    }
+    SpreadsheetApp.flush();
+    for (const group of changed) {
+      const now = new Date().toISOString();
+      if (!group.answered) {
+        const invitationValues = {
+          ...(group.invitation?.values || {}), householdId: group.householdId,
+          displayName: escapeForSheet_(group.displayName), invitationVariant: group.variant,
+          mealChoiceRequired: group.variant === 'day', maxGuests: group.members.length,
+          active: false, currentRevision: 0, createdAt: group.invitation?.values.createdAt || now, updatedAt: now,
+        };
+        const rowNumber = group.invitation?.rowNumber || invitationSheet.getLastRow() + 1;
+        invitationSheet.getRange(rowNumber, 1, 1, HEADERS_.Invitations.length)
+          .setValues([HEADERS_.Invitations.map((header) => invitationValues[header] ?? '')]);
+        for (const member of group.members) {
+          const existing = group.guests.get(member.guestId);
+          const guest = { householdId: group.householdId, guestId: member.guestId,
+            displayName: escapeForSheet_(member.displayName), revision: 0 };
+          guestSheet.getRange(existing?.rowNumber || guestSheet.getLastRow() + 1, 1, 1, HEADERS_.GuestDetails.length)
+            .setValues([HEADERS_.GuestDetails.map((header) => guest[header] ?? '')]);
+        }
+      } else {
+        // Labels are deliberately absent from authenticated RSVP base/target state.
+        // Change only these cells: preserve every response, revision and timestamp.
+        if (String(group.invitation.values.displayName) !== group.displayName) {
+          invitationSheet.getRange(group.invitation.rowNumber, 4).setValue(escapeForSheet_(group.displayName));
+        }
+        for (const member of group.members) {
+          const existing = group.guests.get(member.guestId);
+          if (String(existing.values.displayName) !== member.displayName) {
+            guestSheet.getRange(existing.rowNumber, 3).setValue(escapeForSheet_(member.displayName));
+          }
+        }
+      }
+      const directory = { householdId: group.householdId, displayName: escapeForSheet_(group.displayName),
+        searchNames: JSON.stringify(group.searchNames), active: false };
+      directorySheet.getRange(group.directoryRow?.rowNumber || directorySheet.getLastRow() + 1, 1, 1, 4)
+        .setValues([HEADERS_.NameDirectory.map((header) => directory[header])]);
+      SpreadsheetApp.flush();
+      const invitation = findUniqueRow_(invitationSheet, 'householdId', group.householdId);
+      if (!group.answered) invitationSheet.getRange(invitation.rowNumber, 8).setValue(true);
+      SpreadsheetApp.flush();
+      const entry = findUniqueRow_(directorySheet, 'householdId', group.householdId);
+      directorySheet.getRange(entry.rowNumber, 4).setValue(true);
+      SpreadsheetApp.flush();
+    }
+    properties.deleteProperty('NAME_ROSTER_IMPORT_PENDING');
+    return guestRosterSummary_(plan);
+  });
+}
+
 function doGet() {
   return errorOutput_('invalid', 'WRITER_BUSY');
 }
@@ -1528,7 +1932,9 @@ function doPost(event) {
     responseRequestId = envelope.requestId;
     const writerPayload = readWriterPayload_(envelope);
     let data;
-    if (writerPayload.operation === 'resolve') {
+    if (writerPayload.operation === 'search') {
+      data = searchNameDirectory_(writerPayload.data, envelope);
+    } else if (writerPayload.operation === 'resolve') {
       const resolveData = validateResolveData_(writerPayload.data);
       data = resolveHousehold_(
         resolveData,
@@ -1615,7 +2021,7 @@ function readWriterPayload_(envelope) {
   const payload = parseJsonObject_(decodeBase64UrlUtf8_(envelope.payload));
   assertExactKeys_(payload, ['version', 'operation', 'requestId', 'data']);
   if (payload.version !== PROTOCOL_VERSION_
-      || !['resolve', 'submit'].includes(payload.operation)
+      || !['search', 'resolve', 'submit'].includes(payload.operation)
       || payload.requestId !== envelope.requestId
       || !payload.data
       || typeof payload.data !== 'object'
@@ -1627,11 +2033,18 @@ function readWriterPayload_(envelope) {
 
 function validateCredentialHashData_(data, allowedOtherKeys) {
   const actualKeys = Object.keys(data);
-  const allowed = new Set(['tokenHash', 'accessCodeHash'].concat(allowedOtherKeys));
+  const allowed = new Set(['tokenHash', 'accessCodeHash', 'nameHouseholdId'].concat(allowedOtherKeys));
   if (actualKeys.some((key) => !allowed.has(key))) throw new ApiError_('WRITER_BUSY');
   const hasTokenHash = Object.prototype.hasOwnProperty.call(data, 'tokenHash');
   const hasAccessCodeHash = Object.prototype.hasOwnProperty.call(data, 'accessCodeHash');
-  if (hasTokenHash === hasAccessCodeHash) throw new ApiError_('INVITATION_INVALID');
+  const hasNameId = Object.prototype.hasOwnProperty.call(data, 'nameHouseholdId');
+  if (Number(hasTokenHash) + Number(hasAccessCodeHash) + Number(hasNameId) !== 1) {
+    throw new ApiError_('INVITATION_INVALID');
+  }
+  if (hasNameId) {
+    assertNameLookupEnabled_();
+    return { nameHouseholdId: normalizeOpaqueId_(data.nameHouseholdId) };
+  }
   return hasTokenHash
     ? { tokenHash: normalizeTokenHash_(data.tokenHash) }
     : { accessCodeHash: normalizeTokenHash_(data.accessCodeHash) };
@@ -1645,7 +2058,7 @@ function validateSubmitData_(data) {
   assertAllowedAndRequiredKeys_(
     data,
     ['idempotencyKey', 'revision', 'attending', 'guests'],
-    ['tokenHash', 'accessCodeHash', 'email', 'message'],
+    ['tokenHash', 'accessCodeHash', 'nameHouseholdId', 'email', 'message'],
   );
 
   const credential = validateCredentialHashData_(data, [
@@ -1711,7 +2124,9 @@ function validateSubmitData_(data) {
 
 function hashCanonicalSubmitData_(data) {
   const canonical = {
-    ...(data.tokenHash ? { tokenHash: data.tokenHash } : { accessCodeHash: data.accessCodeHash }),
+    ...(data.nameHouseholdId
+      ? { nameHouseholdId: data.nameHouseholdId }
+      : data.tokenHash ? { tokenHash: data.tokenHash } : { accessCodeHash: data.accessCodeHash }),
     idempotencyKey: data.idempotencyKey,
     revision: data.revision,
     attending: data.attending,
@@ -2609,15 +3024,23 @@ function getActiveInvitation_(spreadsheet, credential) {
 function getInvitationByCredentialHash_(spreadsheet, credential) {
   const hasTokenHash = Object.prototype.hasOwnProperty.call(credential, 'tokenHash');
   const hasAccessCodeHash = Object.prototype.hasOwnProperty.call(credential, 'accessCodeHash');
-  if (hasTokenHash === hasAccessCodeHash) throw new ApiError_('INVITATION_INVALID');
-  const columnName = hasTokenHash ? 'tokenHash' : 'accessCodeHash';
-  const expectedHash = hasTokenHash ? credential.tokenHash : credential.accessCodeHash;
+  const hasNameId = Object.prototype.hasOwnProperty.call(credential, 'nameHouseholdId');
+  if (Number(hasTokenHash) + Number(hasAccessCodeHash) + Number(hasNameId) !== 1) {
+    throw new ApiError_('INVITATION_INVALID');
+  }
+  if (hasNameId) {
+    assertNameLookupEnabled_();
+    getActiveNameDirectoryEntry_(spreadsheet, credential.nameHouseholdId);
+  }
+  const columnName = hasNameId ? 'householdId' : hasTokenHash ? 'tokenHash' : 'accessCodeHash';
+  const expectedHash = hasNameId ? credential.nameHouseholdId : hasTokenHash ? credential.tokenHash : credential.accessCodeHash;
   const row = findUniqueRow_(spreadsheet.getSheetByName(SHEETS_.invitations), columnName, expectedHash);
   if (!row) throw new ApiError_('INVITATION_INVALID');
+  if (hasNameId && !asBooleanStrict_(row.values.active)) throw new ApiError_('INVITATION_INVALID');
 
   const tokenHash = normalizeStoredCredentialHash_(row.values.tokenHash, true);
   const accessCodeHash = normalizeStoredCredentialHash_(row.values.accessCodeHash, true);
-  if (tokenHash === '' && accessCodeHash === '') throw new Error('Invitation has no credential hash.');
+  if (!hasNameId && tokenHash === '' && accessCodeHash === '') throw new Error('Invitation has no credential hash.');
   const policy = invitationPolicyFromValues_(row.values);
   return {
     rowNumber: row.rowNumber,
@@ -2859,7 +3282,7 @@ function getEnvironment_() {
 function buildSheetClearPreview_(spreadsheet, now) {
   const environment = getEnvironment_();
   const rowCounts = {};
-  for (const sheetName of Object.values(SHEETS_)) {
+  for (const sheetName of rsvpDataSheetNames_(spreadsheet)) {
     rowCounts[sheetName] = Math.max(0, spreadsheet.getSheetByName(sheetName).getLastRow() - 1);
   }
   return {

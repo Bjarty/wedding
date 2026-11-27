@@ -14,6 +14,7 @@ import {
   useState,
 } from 'react';
 import { siteContent } from '../../content/siteContent';
+import NameSearchEntry from '../../components/NameSearchEntry';
 import { resolveHousehold, RsvpApiError, submitRsvp } from './api';
 import {
   getEmailConfirmationNote,
@@ -21,6 +22,8 @@ import {
   getReceiptHelperText,
 } from './confirmationEmailCopy';
 import type { RsvpConfig } from './config';
+import type { NameSearchServices } from './nameSearch';
+import { reviewNameRenewal } from './nameRenewal';
 import { requestTurnstileToken } from './turnstile';
 import type {
   DraftErrors,
@@ -39,7 +42,7 @@ import {
 } from './validation';
 
 type LoadState = 'loading' | 'ready' | 'invalid' | 'load-error' | 'offline' | 'rate-limited' | 'closed';
-type NoticeKind = 'success' | 'validation' | 'submit-error' | 'offline' | 'rate-limited' | 'conflict';
+type NoticeKind = 'success' | 'ready' | 'validation' | 'submit-error' | 'offline' | 'rate-limited' | 'conflict';
 
 interface Notice {
   kind: NoticeKind;
@@ -58,6 +61,7 @@ interface RsvpExperienceProps {
   autoFocusHeading?: boolean;
   demo?: boolean;
   services?: RsvpExperienceServices;
+  nameSearchServices?: NameSearchServices;
 }
 
 interface PendingSubmission {
@@ -143,6 +147,7 @@ const StatusPanel = ({
 
 const noticeStyles: Record<NoticeKind, string> = {
   success: 'border-emerald-700/30 bg-emerald-50 text-emerald-950',
+  ready: 'border-emerald-700/30 bg-emerald-50 text-emerald-950',
   validation: 'border-red-700/30 bg-red-50 text-red-950',
   'submit-error': 'border-red-700/30 bg-red-50 text-red-950',
   offline: 'border-amber-700/30 bg-amber-50 text-amber-950',
@@ -156,11 +161,13 @@ export default function RsvpExperience({
   autoFocusHeading = false,
   demo = false,
   services,
+  nameSearchServices,
 }: RsvpExperienceProps) {
   const { contacts, rsvp } = siteContent;
   const activeServices = services ?? liveRsvpServices;
   const prefersReducedMotion = useReducedMotion();
   const [loadState, setLoadState] = useState<LoadState>(credential === null ? 'invalid' : 'loading');
+  const [activeCredential, setActiveCredential] = useState(credential);
   const [household, setHousehold] = useState<ResolvedHousehold | null>(null);
   const [draft, setDraft] = useState<RsvpDraft | null>(null);
   const [errors, setErrors] = useState<DraftErrors>(emptyErrors);
@@ -170,6 +177,9 @@ export default function RsvpExperience({
   const [receiptNumber, setReceiptNumber] = useState<string | null>(null);
   const [hasSavedRsvp, setHasSavedRsvp] = useState(false);
   const [retryAfterSeconds, setRetryAfterSeconds] = useState(0);
+  const [needsNameRenewal, setNeedsNameRenewal] = useState(false);
+  const [renewalError, setRenewalError] = useState('');
+  const renewalHeadingRef = useRef<HTMLHeadingElement>(null);
   const turnstileContainerRef = useRef<HTMLDivElement>(null);
   const formRef = useRef<HTMLFormElement>(null);
   const householdHeadingRef = useRef<HTMLHeadingElement>(null);
@@ -201,6 +211,10 @@ export default function RsvpExperience({
     householdHeadingRef.current?.focus();
   }, [autoFocusHeading, loadState]);
 
+  useEffect(() => {
+    if (needsNameRenewal) renewalHeadingRef.current?.focus();
+  }, [needsNameRenewal]);
+
   const applyResolvedHousehold = useCallback((resolved: ResolvedHousehold) => {
     setHousehold(resolved);
     setDraft(createDraft(resolved));
@@ -210,12 +224,14 @@ export default function RsvpExperience({
     setErrors(emptyErrors());
     setNotice(null);
     setRetryAfterSeconds(0);
+    setNeedsNameRenewal(false);
+    setRenewalError('');
     setLoadState('ready');
   }, []);
 
   const loadHousehold = useCallback(async () => {
     if (operationInProgress.current) return;
-    if (credential === null) {
+    if (activeCredential === null) {
       setLoadState('invalid');
       return;
     }
@@ -256,7 +272,7 @@ export default function RsvpExperience({
       );
       const resolved = await activeServices.resolveHousehold(
         config.apiBaseUrl,
-        credential,
+        activeCredential,
         turnstileToken,
       );
       if (!mounted.current || currentRun !== runId.current) return;
@@ -268,9 +284,15 @@ export default function RsvpExperience({
       const retryDelay = error instanceof RsvpApiError ? (error.retryAfterSeconds ?? 60) : 60;
 
       if (code === 'INVITATION_INVALID') {
-        setHousehold(null);
-        setDraft(null);
-        setLoadState('invalid');
+        if (activeCredential.type === 'nameTicket' && household !== null && draft !== null) {
+          setNeedsNameRenewal(true);
+          setRenewalError('');
+          setNotice(null);
+        } else {
+          setHousehold(null);
+          setDraft(null);
+          setLoadState('invalid');
+        }
       } else if (code === 'RSVP_CLOSED') {
         setHousehold(null);
         setDraft(null);
@@ -298,13 +320,61 @@ export default function RsvpExperience({
       operationInProgress.current = false;
       if (mounted.current && currentRun === runId.current) setBusy(null);
     }
-  }, [activeServices, applyResolvedHousehold, config, credential, household, notice?.kind, rsvp.states]);
+  }, [activeServices, applyResolvedHousehold, config, activeCredential, draft, household, notice?.kind, rsvp.states]);
 
   useEffect(() => {
-    if (initialLoadStarted.current || credential === null) return;
+    if (initialLoadStarted.current || activeCredential === null) return;
     initialLoadStarted.current = true;
     void loadHousehold();
-  }, [credential, loadHousehold]);
+  }, [activeCredential, loadHousehold]);
+
+  const renewNameSelection = async (nameTicket: string) => {
+    if (!needsNameRenewal || household === null || draft === null || operationInProgress.current || retryAfterSeconds > 0) return;
+    const container = turnstileContainerRef.current;
+    if (container === null) return;
+    operationInProgress.current = true;
+    const currentRun = ++runId.current;
+    setBusy('resolve');
+    setRenewalError('');
+    try {
+      const renewedCredential = { type: 'nameTicket', value: nameTicket } as const;
+      const challenge = await activeServices.requestTurnstileToken(container, config.turnstileSiteKey, 'rsvp_resolve');
+      const refreshed = await activeServices.resolveHousehold(config.apiBaseUrl, renewedCredential, challenge);
+      if (!mounted.current || currentRun !== runId.current) return;
+      const reviewed = reviewNameRenewal(household, draft, revision, refreshed);
+      if (reviewed.decision === 'wrong-group' || reviewed.decision === 'changed-group') {
+        setRenewalError(reviewed.decision === 'wrong-group' ? rsvp.states.nameRenewalWrongGroup : rsvp.states.nameRenewalChangedGroup);
+        return;
+      }
+      setActiveCredential(renewedCredential);
+      setNeedsNameRenewal(false);
+      setRetryAfterSeconds(0);
+      // Deliberately do not call applyResolvedHousehold: that would replace
+      // the unsaved answers with the server copy. Renewal never submits.
+      if (reviewed.decision === 'conflict') {
+        pendingSubmission.current = null;
+        setNotice({ kind: 'conflict', message: rsvp.states.nameRenewalConflict });
+      } else {
+        setHousehold(refreshed);
+        setNotice({ kind: 'ready', message: rsvp.states.nameRenewalReady });
+      }
+      window.requestAnimationFrame(() => householdHeadingRef.current?.focus());
+    } catch (error) {
+      if (!mounted.current || currentRun !== runId.current) return;
+      const code = error instanceof RsvpApiError ? error.code : 'UPSTREAM_UNAVAILABLE';
+      if (code === 'RATE_LIMITED') {
+        setRetryAfterSeconds(Math.min(3_600, Math.max(1, error instanceof RsvpApiError ? error.retryAfterSeconds ?? 60 : 60)));
+        setRenewalError(rsvp.states.rateLimited);
+      } else if (code === 'RSVP_CLOSED') {
+        setRenewalError(rsvp.states.closed);
+      } else {
+        setRenewalError(`${rsvp.states.loadError} ${rsvp.states.nameRenewalHeading}.`);
+      }
+    } finally {
+      operationInProgress.current = false;
+      if (mounted.current && currentRun === runId.current) setBusy(null);
+    }
+  };
 
   const updateGuestAttendance = (guestId: string, attending: boolean) => {
     setDraft((current) => {
@@ -323,7 +393,7 @@ export default function RsvpExperience({
       guestAttendance: { ...current.guestAttendance, [guestId]: '' },
       guestMeal: attending ? current.guestMeal : { ...current.guestMeal, [guestId]: '' },
     }));
-    if (notice?.kind === 'success' || notice?.kind === 'validation') setNotice(null);
+    if (notice?.kind === 'success' || notice?.kind === 'ready' || notice?.kind === 'validation') setNotice(null);
   };
 
   const updateMealChoice = (guestId: string, mealChoice: MealChoice) => {
@@ -340,7 +410,7 @@ export default function RsvpExperience({
       ...current,
       guestMeal: { ...current.guestMeal, [guestId]: '' },
     }));
-    if (notice?.kind === 'success' || notice?.kind === 'validation') setNotice(null);
+    if (notice?.kind === 'success' || notice?.kind === 'ready' || notice?.kind === 'validation') setNotice(null);
   };
 
   const focusFirstInvalidField = () => {
@@ -353,7 +423,8 @@ export default function RsvpExperience({
     event.preventDefault();
     if (
       draft === null ||
-      credential === null ||
+      activeCredential === null ||
+      needsNameRenewal ||
       busy !== null ||
       operationInProgress.current ||
       retryAfterSeconds > 0 ||
@@ -404,7 +475,7 @@ export default function RsvpExperience({
         'rsvp_submit',
       );
       const payload: SubmitPayload = {
-        credential,
+        credential: activeCredential,
         idempotencyKey: pendingSubmission.current.idempotencyKey,
         ...submission,
         turnstileToken,
@@ -439,9 +510,15 @@ export default function RsvpExperience({
         setHousehold(null);
         setDraft(null);
       } else if (code === 'INVITATION_INVALID') {
-        setLoadState('invalid');
-        setHousehold(null);
-        setDraft(null);
+        if (activeCredential.type === 'nameTicket') {
+          setNeedsNameRenewal(true);
+          setRenewalError('');
+          setNotice(null);
+        } else {
+          setLoadState('invalid');
+          setHousehold(null);
+          setDraft(null);
+        }
       } else if (code === 'VALIDATION_FAILED') {
         setNotice({ kind: 'validation', message: rsvp.states.validationError });
       } else {
@@ -467,7 +544,7 @@ export default function RsvpExperience({
   if (loadState === 'invalid') {
     return (
       <StatusPanel
-        message={credential?.type === 'accessCode' ? rsvp.states.invalidCode : rsvp.states.invalidLink}
+        message={activeCredential?.type === 'nameTicket' ? rsvp.states.invalidNameSelection : activeCredential?.type === 'accessCode' ? rsvp.states.invalidCode : rsvp.states.invalidLink}
         showContact
       />
     );
@@ -502,7 +579,7 @@ export default function RsvpExperience({
     );
   }
 
-  const editingLocked = busy !== null || notice?.kind === 'conflict';
+  const editingLocked = busy !== null || needsNameRenewal || notice?.kind === 'conflict';
 
   return (
     <motion.div
@@ -550,15 +627,37 @@ export default function RsvpExperience({
         </p>
       </div>
 
+      {needsNameRenewal && (
+        <section className="mt-8 rounded-3xl border border-amber-700/30 bg-amber-50/70 p-4 sm:p-6" aria-label={rsvp.states.nameRenewalHeading}>
+          <h4 ref={renewalHeadingRef} tabIndex={-1} className="text-2xl font-serif outline-none">{rsvp.states.nameRenewalHeading}</h4>
+          <p className="mt-3 text-base leading-relaxed">{rsvp.states.nameRenewalMessage}</p>
+          {renewalError && <p role="alert" className="mt-4 text-base font-semibold text-red-900">{renewalError}</p>}
+          {retryAfterSeconds > 0 && <p role="status" className="mt-3 text-base">Je kunt het over {retryAfterSeconds} seconden opnieuw proberen.</p>}
+          <div className="mt-5">
+            <NameSearchEntry
+              config={config}
+              onSelected={(ticket) => void renewNameSelection(ticket)}
+              services={nameSearchServices}
+              demo={demo}
+              disabled={busy !== null || retryAfterSeconds > 0}
+            />
+          </div>
+          {busy === 'resolve' && <p role="status" className="mt-4 text-base">{rsvp.states.loading}</p>}
+          <a href={`mailto:${contacts.rsvpEmail}`} className="mt-4 inline-flex min-h-11 items-center text-base font-semibold text-jade underline underline-offset-4 focus-visible:ring-2 focus-visible:ring-jade">
+            {rsvp.contactLabel}
+          </a>
+        </section>
+      )}
+
       <form ref={formRef} onSubmit={handleSubmit} className="mt-10 space-y-8" noValidate>
         {notice !== null && (
           <div
             className={`rounded-2xl border px-5 py-4 text-sm leading-relaxed ${noticeStyles[notice.kind]}`}
-            role={notice.kind === 'success' ? 'status' : 'alert'}
-            aria-live={notice.kind === 'success' ? 'polite' : 'assertive'}
+            role={notice.kind === 'success' || notice.kind === 'ready' ? 'status' : 'alert'}
+            aria-live={notice.kind === 'success' || notice.kind === 'ready' ? 'polite' : 'assertive'}
           >
             <div className="flex items-start gap-3">
-              {notice.kind === 'success' ? (
+              {notice.kind === 'success' || notice.kind === 'ready' ? (
                 <CheckCircle2 aria-hidden="true" className="mt-0.5 h-5 w-5 shrink-0" />
               ) : (
                 <AlertTriangle aria-hidden="true" className="mt-0.5 h-5 w-5 shrink-0" />
@@ -686,7 +785,7 @@ export default function RsvpExperience({
             onChange={(event) => {
               setDraft((current) => current === null ? current : { ...current, email: event.target.value });
               setErrors((current) => ({ ...current, email: undefined }));
-              if (notice?.kind === 'success' || notice?.kind === 'validation') setNotice(null);
+              if (notice?.kind === 'success' || notice?.kind === 'ready' || notice?.kind === 'validation') setNotice(null);
             }}
             aria-invalid={errors.email !== undefined}
             aria-describedby={`rsvp-email-helper${errors.email === undefined ? '' : ' rsvp-email-error'}`}
@@ -697,12 +796,14 @@ export default function RsvpExperience({
             {demo ? getEmailConfirmationNote(rsvp, {
               confirmationEmailEnabled: config.confirmationEmailEnabled,
               demo,
+              nameLookup: activeCredential?.type === 'nameTicket',
             }) : (
               <>
                 {rsvp.form.emailHelper}{' '}
                 {getEmailConfirmationNote(rsvp, {
                   confirmationEmailEnabled: config.confirmationEmailEnabled,
                   demo,
+                  nameLookup: activeCredential?.type === 'nameTicket',
                 })}
               </>
             )}
@@ -726,7 +827,7 @@ export default function RsvpExperience({
             onChange={(event) => {
               setDraft((current) => current === null ? current : { ...current, message: event.target.value });
               setErrors((current) => ({ ...current, message: undefined }));
-              if (notice?.kind === 'success' || notice?.kind === 'validation') setNotice(null);
+              if (notice?.kind === 'success' || notice?.kind === 'ready' || notice?.kind === 'validation') setNotice(null);
             }}
             aria-invalid={errors.message !== undefined}
             aria-describedby={`rsvp-message-helper rsvp-message-count${errors.message === undefined ? '' : ' rsvp-message-error'}`}
@@ -754,6 +855,7 @@ export default function RsvpExperience({
             {getPrivacyMessage(rsvp, {
               confirmationEmailEnabled: config.confirmationEmailEnabled,
               demo,
+              nameLookup: activeCredential?.type === 'nameTicket',
             })}
           </p>
         </details>
@@ -770,6 +872,7 @@ export default function RsvpExperience({
               {getReceiptHelperText(rsvp, {
                 confirmationEmailEnabled: config.confirmationEmailEnabled,
                 demo,
+                nameLookup: activeCredential?.type === 'nameTicket',
                 email: draft.email,
               })}
             </p>

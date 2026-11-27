@@ -4,6 +4,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import HouseholdCodeEntry from '../../components/HouseholdCodeEntry';
 import RsvpUnavailable from '../../components/RsvpUnavailable';
 import NameSearchEntry from '../../components/NameSearchEntry';
+import StaticNameSearchEntry from '../../components/StaticNameSearchEntry';
 
 test('de code-invoer toont persoonlijke code en XXX-XXX zonder uitleg over langere codes', () => {
   const html = renderToStaticMarkup(<HouseholdCodeEntry onAccepted={() => {}} />);
@@ -42,4 +43,16 @@ test('een productiebuild zonder configuratie blijft dicht met een contactmogelij
   assert.match(html, /RSVP is tijdelijk niet beschikbaar/u);
   assert.match(html, /href="mailto:rsvp@lisetteenbjarty\.nl"/u);
   assert.doesNotMatch(html, /<form|<input|binnenkort|RSVP is geopend|Open de live RSVP/iu);
+});
+
+test('de vaste naamzoeker is toegankelijk en vraagt bij zoeken geen code of beveiligingscontrole', () => {
+  const html = renderToStaticMarkup(<StaticNameSearchEntry groups={[]} onSelected={() => {}} />);
+  assert.match(html, /Voornaam of achternaam/u);
+  assert.match(html, /type="search"/u);
+  assert.match(html, /role="search"/u);
+  assert.match(html, /aria-controls="[^"]+-results"/u);
+  assert.match(html, /aria-live="polite"/u);
+  assert.match(html, /type="submit"/u);
+  assert.match(html, /text-lg/u);
+  assert.doesNotMatch(html, /XXX-XXX|persoonlijke code|type="password"|Beveiligingscontrole|turnstile/iu);
 });

@@ -11,6 +11,7 @@ import {
 import HouseholdCodeEntry from './HouseholdCodeEntry';
 import RsvpUnavailable from './RsvpUnavailable';
 import NameSearchEntry from './NameSearchEntry';
+import StaticNameSearchEntry from './StaticNameSearchEntry';
 
 const rsvpConfig = getRsvpConfig();
 const invitationDemoConfig = {
@@ -29,7 +30,7 @@ export default function RSVPForm() {
     new URLSearchParams(window.location.search).get('demo') === 'invitation';
   const [demoCredential, setDemoCredential] = useState<string | null>(null);
   const [householdCode, setHouseholdCode] = useState<string | null>(null);
-  const [nameTicket, setNameTicket] = useState<string | null>(null);
+  const [publicGroupId, setPublicGroupId] = useState<string | null>(null);
   const [{ inviteToken, shouldRemoveFragment }] = useState(() => {
     if (typeof window === 'undefined') return { inviteToken: null, shouldRemoveFragment: false };
     return {
@@ -103,14 +104,14 @@ export default function RSVPForm() {
             credential={{ type: 'inviteToken', value: inviteToken }}
           />
         ) : rsvpConfig.nameLookupEnabled ? (
-          nameTicket === null ? (
-            <NameSearchEntry config={rsvpConfig} onSelected={setNameTicket} />
+          publicGroupId === null ? (
+            <StaticNameSearchEntry onSelected={setPublicGroupId} />
           ) : (
             <>
               <div className="mx-auto mb-5 flex max-w-3xl justify-end">
                 <button
                   type="button"
-                  onClick={() => setNameTicket(null)}
+                  onClick={() => setPublicGroupId(null)}
                   className="min-h-12 rounded-full border border-cream/40 px-5 py-3 text-base font-semibold text-cream outline-none hover:border-sage hover:text-sage focus-visible:ring-2 focus-visible:ring-sage focus-visible:ring-offset-2 focus-visible:ring-offset-stone-dark"
                 >
                   {rsvp.nameEntry.switchLabel}
@@ -119,7 +120,7 @@ export default function RSVPForm() {
               <RsvpExperience
                 autoFocusHeading
                 config={rsvpConfig}
-                credential={{ type: 'nameTicket', value: nameTicket }}
+                credential={{ type: 'publicGroupId', value: publicGroupId }}
               />
             </>
           )

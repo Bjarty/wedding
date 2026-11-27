@@ -444,6 +444,7 @@ export const siteContent = {
       invalidLink: 'Deze persoonlijke link is niet geldig of niet meer actief. Controleer of je de volledige link hebt geopend.',
       invalidCode: 'Deze persoonlijke code is niet geldig of niet meer actief. Controleer de code op jullie uitnodiging.',
       invalidNameSelection: 'Deze selectie is verlopen of jullie groep is niet meer beschikbaar. Kies bovenaan “Een andere naam zoeken” om je groep opnieuw te openen.',
+      invalidPublicGroupSelection: 'We kunnen jullie groep nu niet openen. Kies bovenaan “Een andere naam zoeken” om opnieuw te kiezen, of mail ons.',
       nameRenewalHeading: 'Je invoer is bewaard',
       nameRenewalMessage: 'Dit formulier stond een tijdje open. Zoek hieronder opnieuw op je naam en kies dezelfde groep om verder te gaan. Je ingevulde antwoorden blijven op dit scherm staan en worden niet automatisch verstuurd.',
       nameRenewalWrongGroup: 'Dit is een andere groep. Je antwoorden zijn niet gewijzigd. Zoek opnieuw en kies de groep die bovenaan dit formulier staat.',

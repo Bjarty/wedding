@@ -168,6 +168,7 @@ export default function RsvpExperience({
   const prefersReducedMotion = useReducedMotion();
   const [loadState, setLoadState] = useState<LoadState>(credential === null ? 'invalid' : 'loading');
   const [activeCredential, setActiveCredential] = useState(credential);
+  const usesNameSelection = activeCredential?.type === 'nameTicket' || activeCredential?.type === 'publicGroupId';
   const [household, setHousehold] = useState<ResolvedHousehold | null>(null);
   const [draft, setDraft] = useState<RsvpDraft | null>(null);
   const [errors, setErrors] = useState<DraftErrors>(emptyErrors);
@@ -544,7 +545,10 @@ export default function RsvpExperience({
   if (loadState === 'invalid') {
     return (
       <StatusPanel
-        message={activeCredential?.type === 'nameTicket' ? rsvp.states.invalidNameSelection : activeCredential?.type === 'accessCode' ? rsvp.states.invalidCode : rsvp.states.invalidLink}
+        message={activeCredential?.type === 'publicGroupId'
+          ? rsvp.states.invalidPublicGroupSelection
+          : activeCredential?.type === 'nameTicket' ? rsvp.states.invalidNameSelection
+            : activeCredential?.type === 'accessCode' ? rsvp.states.invalidCode : rsvp.states.invalidLink}
         showContact
       />
     );
@@ -796,14 +800,14 @@ export default function RsvpExperience({
             {demo ? getEmailConfirmationNote(rsvp, {
               confirmationEmailEnabled: config.confirmationEmailEnabled,
               demo,
-              nameLookup: activeCredential?.type === 'nameTicket',
+              nameLookup: usesNameSelection,
             }) : (
               <>
                 {rsvp.form.emailHelper}{' '}
                 {getEmailConfirmationNote(rsvp, {
                   confirmationEmailEnabled: config.confirmationEmailEnabled,
                   demo,
-                  nameLookup: activeCredential?.type === 'nameTicket',
+                  nameLookup: usesNameSelection,
                 })}
               </>
             )}
@@ -855,7 +859,7 @@ export default function RsvpExperience({
             {getPrivacyMessage(rsvp, {
               confirmationEmailEnabled: config.confirmationEmailEnabled,
               demo,
-              nameLookup: activeCredential?.type === 'nameTicket',
+              nameLookup: usesNameSelection,
             })}
           </p>
         </details>
@@ -872,7 +876,7 @@ export default function RsvpExperience({
               {getReceiptHelperText(rsvp, {
                 confirmationEmailEnabled: config.confirmationEmailEnabled,
                 demo,
-                nameLookup: activeCredential?.type === 'nameTicket',
+                nameLookup: usesNameSelection,
                 email: draft.email,
               })}
             </p>

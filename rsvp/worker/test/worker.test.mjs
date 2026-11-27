@@ -1112,6 +1112,155 @@ test('name selection never bypasses a writer rejection after directory revocatio
   assert.equal((await parseJson(response)).error.code, 'INVITATION_INVALID');
 });
 
+test('public group selection resolves and submits using only the signed name writer credential', async () => {
+  const env = { ...nameEnv, HOUSEHOLD_CODES_ENABLED: 'false' };
+  const { inviteToken: ignored, ...submission } = submitBody;
+  for (const [path, action, body, writerData] of [
+    ['/v1/households/resolve', 'rsvp_resolve', { turnstileToken: 'resolve-challenge' }, resolveData],
+    ['/v1/rsvps/submit', 'rsvp_submit', submission, submitData],
+  ]) {
+    const upstream = makeHappyFetch({
+      action, writerData,
+      onWriter: async (envelope) => {
+        const payload = decodePayload(envelope);
+        assert.equal(payload.operation, action === 'rsvp_resolve' ? 'resolve' : 'submit');
+        assert.equal(payload.data.nameHouseholdId, 'hh_example');
+        for (const field of ['publicGroupId', 'inviteToken', 'accessCode', 'nameTicket', 'tokenHash', 'accessCodeHash']) {
+          assert.equal(Object.hasOwn(payload.data, field), false);
+        }
+        assert.equal(envelope.signature, await hmacBase64Url(
+          WRITER_SECRET, `v1.${envelope.timestamp}.${envelope.requestId}.${envelope.payload}`,
+        ));
+        if (action === 'rsvp_resolve') {
+          assert.deepEqual(payload.data, { nameHouseholdId: 'hh_example' });
+        } else {
+          assert.equal(payload.data.idempotencyKey, IDEMPOTENCY_KEY);
+          assert.equal(payload.data.revision, 0);
+          assert.deepEqual(payload.data.guests, submitBody.guests);
+          assert.equal(payload.data.email, 'gast@example.nl');
+        }
+      },
+    });
+    const response = await handleRequest(
+      makeRequest(path, { ...body, publicGroupId: 'hh_example' }), env, makeDependencies(upstream.fetch),
+    );
+    assert.equal(response.status, 200);
+    assert.equal(upstream.calls, 2);
+    const result = await parseJson(response);
+    assert.deepEqual(result.data, writerData);
+    for (const privateValue of [HASH_SECRET, ACCESS_HASH_SECRET, WRITER_SECRET, WRITER_URL]) {
+      assert.equal(JSON.stringify(result).includes(privateValue), false);
+    }
+  }
+});
+
+test('public group selection is disabled without the exact name flag and still requires server secrets', async () => {
+  let calls = 0;
+  const dependencies = makeDependencies(async () => { calls += 1; throw new Error('must not fetch'); });
+  const { inviteToken: ignored, ...submission } = submitBody;
+  for (const env of [baseEnv, { ...nameEnv, NAME_LOOKUP_ENABLED: 'false' }]) {
+    for (const [path, body] of [
+      ['/v1/households/resolve', { publicGroupId: 'hh_example', turnstileToken: 'x' }],
+      ['/v1/rsvps/submit', { ...submission, publicGroupId: 'hh_example' }],
+    ]) {
+      const response = await handleRequest(makeRequest(path, body), env, dependencies);
+      assert.equal(response.status, 404);
+      assert.equal((await parseJson(response)).error.code, 'INVITATION_INVALID');
+    }
+  }
+  for (const missing of ['WRITER_HMAC_SECRET', 'ACCESS_CODE_HASH_SECRET', 'TURNSTILE_SECRET']) {
+    const response = await handleRequest(
+      makeRequest('/v1/households/resolve', { publicGroupId: 'hh_example', turnstileToken: 'x' }),
+      { ...nameEnv, [missing]: '' }, dependencies,
+    );
+    assert.equal(response.status, 503);
+    assert.equal((await parseJson(response)).error.code, 'CONFIGURATION_ERROR');
+  }
+  assert.equal(calls, 0);
+});
+
+test('public group IDs are bounded opaque values and cannot be mixed with any other credential', async () => {
+  let calls = 0;
+  const dependencies = makeDependencies(async () => { calls += 1; throw new Error('must not fetch'); });
+  const nameTicket = await createNameTicket('hh_example', nameEnv, dependencies);
+  const { inviteToken: ignored, ...submission } = submitBody;
+  const credentials = [
+    ...['', ' ', 'a'.repeat(65), '../group', 'group/name', 'group name', 'gróup', null, 123, {}, []]
+      .map((publicGroupId) => ({ publicGroupId })),
+    { publicGroupId: 'hh_example', inviteToken: RAW_TOKEN },
+    { publicGroupId: 'hh_example', accessCode: RAW_SHORT_ACCESS_CODE },
+    { publicGroupId: 'hh_example', nameTicket },
+    { publicGroupId: 'hh_example', nameHouseholdId: 'hh_other' },
+    { publicGroupId: 'hh_example', accessCodeHash: 'x'.repeat(43) },
+  ];
+  for (const credential of credentials) {
+    for (const [path, body] of [
+      ['/v1/households/resolve', { ...credential, turnstileToken: 'x' }],
+      ['/v1/rsvps/submit', { ...submission, ...credential }],
+    ]) {
+      const response = await handleRequest(makeRequest(path, body), nameEnv, dependencies);
+      assert.equal(response.status, 422);
+      assert.equal((await parseJson(response)).error.code, 'VALIDATION_FAILED');
+    }
+  }
+  assert.equal(calls, 0);
+  for (const publicGroupId of ['x', 'A'.repeat(64), 'group_1-A']) {
+    const upstream = makeHappyFetch({ action: 'rsvp_resolve', writerData: { ...resolveData, householdId: publicGroupId } });
+    const response = await handleRequest(
+      makeRequest('/v1/households/resolve', { publicGroupId, turnstileToken: 'x' }), nameEnv, makeDependencies(upstream.fetch),
+    );
+    assert.equal(response.status, 200);
+  }
+});
+
+test('public group selection shares the name ticket group limits before any upstream request', async () => {
+  const dependencies = makeDependencies(async () => { throw new Error('limited request must not fetch'); });
+  const nameTicket = await createNameTicket('hh_example', nameEnv, dependencies);
+  const { inviteToken: ignored, ...submission } = submitBody;
+  const keys = [];
+  const limiter = { limit: async ({ key }) => { keys.push(key); return { success: false }; } };
+  const env = { ...nameEnv, RESOLVE_RATE_LIMITER: limiter, SUBMIT_RATE_LIMITER: limiter };
+  for (const credential of [{ publicGroupId: 'hh_example' }, { nameTicket }]) {
+    for (const [path, body] of [
+      ['/v1/households/resolve', { ...credential, turnstileToken: 'x' }],
+      ['/v1/rsvps/submit', { ...submission, ...credential }],
+    ]) {
+      const response = await handleRequest(makeRequest(path, body), env, dependencies);
+      assert.equal(response.status, 429);
+      assert.equal((await parseJson(response)).error.code, 'RATE_LIMITED');
+    }
+  }
+  assert.equal(keys.length, 4);
+  assert.equal(new Set(keys).size, 1);
+  assert.equal(keys[0], await hmacBase64Url(ACCESS_HASH_SECRET, 'rsvp-name-household-rate-v1\0hh_example'));
+});
+
+test('public group selection still enforces Turnstile action and writer directory revocation on both routes', async () => {
+  const { inviteToken: ignored, ...submission } = submitBody;
+  for (const [path, action, body] of [
+    ['/v1/households/resolve', 'rsvp_resolve', { publicGroupId: 'hh_example', turnstileToken: 'x' }],
+    ['/v1/rsvps/submit', 'rsvp_submit', { ...submission, publicGroupId: 'hh_example' }],
+  ]) {
+    const wrongAction = makeHappyFetch({ action: 'rsvp_search', writerData: resolveData });
+    const challenged = await handleRequest(makeRequest(path, body), nameEnv, makeDependencies(wrongAction.fetch));
+    assert.equal(challenged.status, 403);
+    assert.equal((await parseJson(challenged)).error.code, 'CHALLENGE_FAILED');
+    assert.equal(wrongAction.calls, 1);
+    const dependencies = makeDependencies(async (input, init) => {
+      if (String(input).includes('/turnstile/v0/siteverify')) {
+        return Response.json({ success: true, hostname: 'lisetteenbjarty.nl', action });
+      }
+      assert.equal(String(input), WRITER_URL);
+      const envelope = JSON.parse(String(init.body));
+      assert.equal(decodePayload(envelope).data.nameHouseholdId, 'hh_example');
+      return Response.json({ version: 'v1', requestId: envelope.requestId, ok: false, error: { code: 'INVITATION_INVALID' } });
+    });
+    const rejected = await handleRequest(makeRequest(path, body), nameEnv, dependencies);
+    assert.equal(rejected.status, 404);
+    assert.equal((await parseJson(rejected)).error.code, 'INVITATION_INVALID');
+  }
+});
+
 test('offline provisioning emits a private fragment link and the same keyed token hash', async () => {
   const deterministicBytes = Buffer.alloc(32, 7);
   const result = createInvitation({

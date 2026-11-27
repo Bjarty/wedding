@@ -10,54 +10,60 @@ dezelfde naamzoeker. Er is geen zichtbare code, account of e-mailverificatie.
 Dit is bewust laagdrempelige toegang, **geen identiteitscontrole**. Iemand die een
 gastnaam kent kan passende groepen vinden en hun RSVP bekijken of wijzigen,
 inclusief eventueel ingevuld e-mailadres en bericht. Deel daarom geen gevoelige
-informatie in het vrije bericht. De beheer-Sheet blijft privé, maar zoekresultaten
-en de naamgebaseerde gasttoegang zijn niet geheim. Turnstile en begrensde
-zoekresultaten beperken misbruik; zij maken een naam niet tot een wachtwoord.
+informatie in het vrije bericht. De beheer-Sheet blijft privé. De vaste lijst
+met namen, groepsindeling en dag-/avondtype staat op verzoek openbaar in Git en
+de websitebundle en is volledig downloadbaar. Turnstile en serverlimieten
+beperken geautomatiseerde toegang tot antwoorden; zij maken een naam niet tot
+een wachtwoord.
 
-De openbare website bevat geen gastenbestand. Zoekopdrachten gaan als POST naar
-de bestaande Worker. Alleen passende groepslabels worden teruggestuurd, maximaal
-acht; bij meer resultaten moet de gast specifieker zoeken. Hoofdletters en accenten
-maken bij het zoeken niet uit. Een gekozen resultaat draagt tijdelijk een intern
-ondertekend selectiebewijs in het tabgeheugen. Dat bewijs wordt niet getoond,
-opgeslagen in de URL/browseropslag of naar de Sheet doorgestuurd. Het verloopt na
-een uur; opnieuw zoeken geeft toegang zonder een code te onthouden.
-Als het formulier dan nog openstaat, blijven niet-opgeslagen antwoorden zichtbaar.
-De gast kiest dezelfde groep opnieuw en verstuurt daarna zelf; bij een intussen
-gewijzigde reactie vraagt het formulier expliciet om de opgeslagen versie te laden.
+De gast zoekt lokaal in `src/content/rsvpRoster.json`, zonder zoek-API of
+beveiligingscontrole tijdens het typen. Vanaf twee letters verschijnen maximaal
+acht passende groepen; bij meer resultaten vraagt de interface om een specifiekere
+naam. Dit maximum dient het overzicht, niet de geheimhouding. Hoofdletters en
+accenten maken niet uit. Na keuze gaat alleen de publieke groeps-ID als
+`publicGroupId` in het POST-verzoek naar de Worker. Openen en opslaan behouden
+Turnstile, servervalidatie en de bestaande Google-opslag. De server controleert
+de actieve groep en groepsleden; de publieke lijst verleent geen beheertoegang.
+De selectie blijft in tabgeheugen, nooit in de URL of browseropslag, en vereist
+geen zichtbaar of verlopen selectieticket. Bij gelijktijdige wijzigingen vraagt
+het formulier expliciet om de nieuw opgeslagen versie te laden.
 
 ## Eén bronrij is één groep
 
-De private bron-JSON heeft `version: 1` en een lijst `groups`. Per groep:
+**Namen aanpassen:** bewerk `src/content/rsvpRoster.json`. Dit is de bron voor
+zowel de zichtbare keuzelijst als de export naar Google. Het bestand heeft
+`version: 1` en een lijst `groups`. Per groep:
 
 - `householdId`: vaste unieke ID, niet afgeleid van een naam;
 - `guests`: één item per persoon met vaste `guestId` en `firstName`;
 - `familyNames`: lijst van familie-/achternamen die bij de groep horen;
-- `invitationVariant`: `day` of `evening` voor de hele groep;
-- `searchEnabled`: expliciet `true` of `false`;
-- `reviewNote`: leeg als alles bevestigd is; anders een private beheeropmerking.
+- `invitationVariant`: `day` of `evening` voor de hele groep.
 
 Familienamen zijn **groepsaliassen**. We wijzen niet op basis van volgorde of
 een aanname een achternaam aan een persoon toe. Een familienaam maakt de groep
 vindbaar; de maaltijdkeuze blijft gekoppeld aan de afzonderlijke persoons-ID.
 Ontbrekende achternamen mogen leeg blijven: zoeken op voornaam blijft mogelijk.
-Een groep met een reviewopmerking of `searchEnabled=false` wordt niet gepubliceerd.
-Identieke actieve groepslabels worden geweigerd in plaats van samengevoegd.
+Neem alleen bevestigde groepen op. Onzekere groepen en reviewopmerkingen blijven
+in het private bronbestand; ze horen niet in deze publieke lijst. Identieke
+groepslabels worden geweigerd in plaats van samengevoegd.
 
-Bewaar echte namen en importbestanden buiten Git. De lokale map `.local/rsvp/`
-is expliciet genegeerd en wordt niet meegebouwd. Maak zelf een afgeschermde back-up;
-Git bewaart deze bestanden niet. Voeg ze ook niet toe aan PR-teksten of CI-logs.
-Adressen zijn niet nodig voor RSVP en horen niet in deze import.
+Zet nooit codes, tokens, e-mailadressen, antwoorden, berichten, adressen of
+beheernotities in de publieke lijst. Bewaar die en importbestanden buiten Git.
+De lokale map `.local/rsvp/` is expliciet genegeerd en wordt niet meegebouwd.
+Maak zelf een afgeschermde back-up; Git bewaart deze private bestanden niet.
 De ontwikkelserver luistert alleen op deze computer en blokkeert `.local/` en
 `output/` expliciet; alleen `.gitignore` zou deze bestanden niet tegen HTTP-
 toegang beschermen. Zet deze directories nooit onder `public/`.
 
 ### Importbestand voorbereiden
 
-Gebruik Node.js 22. De helper valideert de lijst en schrijft één nieuw tabgescheiden
-plakbestand met één persoon per rij. Hij overschrijft niets en logt alleen aantallen:
+Gebruik Node.js 22. De helper valideert de vaste publieke lijst en schrijft één
+nieuw tabgescheiden plakbestand met één persoon per rij. Hij voegt voor deze
+bevestigde groepen `searchEnabled=TRUE` en een lege reviewopmerking toe,
+overschrijft niets en logt alleen aantallen:
 
 ```powershell
-npm run prepare:rsvp-roster -- --input ".local/rsvp/guest-roster-v1.json" --out ".local/rsvp/GuestRoster-v1-paste.txt"
+npm run prepare:rsvp-static-roster -- --out ".local/rsvp/GuestRoster-public-v1.txt"
 ```
 
 Gebruik een nieuwe uitvoernaam bij een volgende versie. De kopregel is exact:
@@ -71,12 +77,10 @@ naar `Invitations`, `GuestDetails`, `Responses` of `NameDirectory`. Houd kolom F
 als echte booleans of de tekst `TRUE`/`FALSE`. Familienamen blijven dezelfde
 komma-gescheiden groepsaliassen op iedere persoonsrij van een groep.
 
-De eerste aangeleverde versie heeft 36 groepen/58 personen, waarvan
-32 groepen/53 personen importeerbaar en 4 groepen/5 personen in review zijn.
-De open punten staan in het private bronbestand; echte namen staan niet in dit
-runbook. Los deze op door de juiste gegevens te bevestigen, de reviewopmerking
-leeg te maken en `searchEnabled` aan te zetten. Verzin geen onderscheid voor
-twee gelijknamige personen.
+De publieke eerste versie bevat 32 bevestigde groepen/53 personen. De overige
+4 groepen/5 personen uit de aangeleverde versie blijven privé in review. Voeg
+ze pas toe als persoon, dag-/avondtype en eventueel onderscheid zijn bevestigd.
+De oude `prepare:rsvp-roster`-helper blijft beschikbaar voor private reviewlijsten.
 
 ## Bestaande gegevens en latere aanvullingen
 
@@ -85,9 +89,16 @@ reacties. Nieuwe bron-IDs zijn alleen voorstellen. Als er al een echte groep
 bestaat, neem haar bestaande `householdId` en persoons-IDs over; maak geen tweede
 groep met nieuwe IDs. Match nooit automatisch uitsluitend op een naam.
 
-Nieuwe groepen kunnen later met nieuwe, blijvende IDs worden toegevoegd.
+Nieuwe groepen kunnen later met nieuwe, blijvende IDs worden toegevoegd. Na
+wijzigingen: exporteer de publieke bron opnieuw, plak in `GuestRoster`, draai
+`previewGuestRosterImport()` en voer de bestaande gecontroleerde import uit
+vóór publicatie van de aangepaste website. Alleen de website wijzigen maakt
+nieuwe groepen nog niet geldig voor opslag. `GuestRoster` is bij deze variant
+de importtussenstap; wijzigingen daar veranderen de vaste websitekeuzelijst niet.
 Een ongewijzigde herimport is een no-op. Weglaten uit de nieuwe lijst verwijdert
-geen bestaande groepen of reacties. Een ingetrokkene wordt niet stilzwijgend
+geen bestaande groepen of reacties. Uit de publieke lijst verwijderen trekt
+toegang niet in: zet ook de betreffende `NameDirectory.active` op `false`.
+Een oude websiteversie kan de publieke ID immers nog bevatten. Een ingetrokkene wordt niet stilzwijgend
 gereactiveerd. Een al gepubliceerde groep in review zetten vereist eerst een
 bewuste uitschakeling, zodat een typefout geen RSVP onbedoeld onbereikbaar maakt.
 
@@ -125,8 +136,8 @@ worden toegevoegd.
    Verwijder nooit handmatig de checkpoint-property om een fout te omzeilen.
 6. Publiceer een nieuwe versie van het bestaande Apps Script-webapp-deployment.
    Deploy daarna de beoordeelde Worker naar het bestaande productie-endpoint,
-   aanvankelijk met `NAME_LOOKUP_ENABLED=false`. Gebruik de bestaande secrets;
-   de interne naamtickets gebruiken een afzonderlijk HMAC-domein. Roteer geen
+   aanvankelijk met `NAME_LOOKUP_ENABLED=false`. Gebruik de bestaande secrets
+   en controleer dat de versie `publicGroupId` ondersteunt. Roteer geen
    secrets en wijzig geen bestaande codes als onderdeel van deze omschakeling.
 7. Controleer de geïmporteerde rijen, activeer Script Property
    `NAME_LOOKUP_ENABLED=true`, herstel de bewaarde RSVP-deadline en mailinstelling en zet daarna
@@ -140,7 +151,8 @@ worden toegevoegd.
    uit: zoeken op voornaam/achternaam/accentloze variant, selecteren, dag/avond,
    eerste reactie, bevestigingsmail, opnieuw zoeken en aanpassen. Controleer
    dat dezelfde groep/ontvangstnummer wordt bijgewerkt en geen tweede reactie
-   ontstaat. Verifieer geen naam, query of selectiebewijs in URL/logs/Git.
+   ontstaat. Verifieer geen naam, antwoord of selectie in URL/logs en geen
+   antwoorden of credentials in Git. Namen staan bewust in de publieke lijst.
    Gebruik hiervoor geen echte gast en stuur geen ongevraagde mail.
 
 De gewijzigde mailtemplate vertelt bij naamgebaseerde reacties hoe je opnieuw op
@@ -150,8 +162,8 @@ pas hun inhoud/MACs niet handmatig aan. Zie het bijgewerkte
 
 ### Rollback
 
-Zet eerst Worker en Apps Script `NAME_LOOKUP_ENABLED=false`, zodat reeds uitgegeven
-naamtickets ook geen toegang meer geven. Zet daarna de frontendnaamvlag uit en
+Zet eerst Worker en Apps Script `NAME_LOOKUP_ENABLED=false`, zodat publieke
+groeps-IDs en bestaande naamtickets geen toegang meer geven. Zet daarna de frontendnaamvlag uit en
 publiceer opnieuw. De oude codeflow werkt alleen voor groepen die echt een
 bestaande code hebben; nieuw geïmporteerde naam-only groepen hebben die niet en
 moeten tijdelijk contact opnemen. Trek geen oude codes in en verwijder geen

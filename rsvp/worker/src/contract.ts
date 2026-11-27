@@ -63,9 +63,10 @@ export interface Env {
 }
 
 export type InvitationCredential =
-  | { inviteToken: string; accessCode?: never; nameTicket?: never }
-  | { accessCode: string; inviteToken?: never; nameTicket?: never }
-  | { nameTicket: string; inviteToken?: never; accessCode?: never };
+  | { inviteToken: string; accessCode?: never; nameTicket?: never; publicGroupId?: never }
+  | { accessCode: string; inviteToken?: never; nameTicket?: never; publicGroupId?: never }
+  | { nameTicket: string; inviteToken?: never; accessCode?: never; publicGroupId?: never }
+  | { publicGroupId: string; inviteToken?: never; accessCode?: never; nameTicket?: never };
 
 export type CredentialHash =
   | { tokenHash: string; accessCodeHash?: never; nameHouseholdId?: never }

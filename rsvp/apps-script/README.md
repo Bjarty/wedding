@@ -112,14 +112,17 @@ beschermt ook namen die tijdens provisioning worden ingevoerd.
 Deze route is op uitdrukkelijk verzoek **naam-only**, zonder identiteitscontrole.
 Wie een naam kent en de bijbehorende groep kiest, kan de groepsleden en bestaande
 RSVP (ook het optionele e-mailadres en bericht) bekijken en wijzigen. De private
-Sheet en een begrensde zoek-API voorkomen een openbare download van de hele
-lijst, maar maken namen niet geheim en bewijzen niet wie de bezoeker is.
+Sheet houdt antwoorden privé, maar de gekozen vaste namenlijst staat openbaar
+in `src/content/rsvpRoster.json`, Git en de websitebundle. Iedereen kan die lijst
+downloaden. Naamkeuze bewijst niet wie de bezoeker is. Zie
+[namenlijst en beheer](../NAME-LOOKUP.md) voor de actuele invoerbron.
 
 De route staat standaard uit. Zet Script Property `NAME_LOOKUP_ENABLED` pas na
 de beoordeelde import en Worker-publicatie op exact `true`; een ontbrekende of
 andere waarde weigert zoeken en naamgebaseerde resolve/submit. De bestaande
 hashroutes blijven beschikbaar voor een gecontroleerde rollback. De Worker
-verifieert een kortlevend selectieticket; de writer ontvangt uitsluitend
+accepteert bij de vaste lijst een publieke groeps-ID (en blijft oudere
+kortlevende selectietickets verifiëren); de writer ontvangt uitsluitend
 `{ "nameHouseholdId": "groep-id" }` als nieuwe, wederzijds uitsluitende
 credential. Ook een idempotente submitretry controleert bij naamtoegang opnieuw
 dat zowel `NameDirectory.active` als `Invitations.active` waar zijn.

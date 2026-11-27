@@ -1,0 +1,472 @@
+{
+  "version": 1,
+  "groups": [
+    {
+      "householdId": "rsvp_g001",
+      "familyNames": [
+        "van Leeuwen",
+        "Zeilstra"
+      ],
+      "invitationVariant": "day",
+      "guests": [
+        {
+          "guestId": "rsvp_g001_p01",
+          "firstName": "Anne"
+        },
+        {
+          "guestId": "rsvp_g001_p02",
+          "firstName": "Trees"
+        }
+      ]
+    },
+    {
+      "householdId": "rsvp_g002",
+      "familyNames": [
+        "van Leeuwen"
+      ],
+      "invitationVariant": "day",
+      "guests": [
+        {
+          "guestId": "rsvp_g002_p01",
+          "firstName": "Alyne"
+        }
+      ]
+    },
+    {
+      "householdId": "rsvp_g003",
+      "familyNames": [
+        "van Leeuwen"
+      ],
+      "invitationVariant": "day",
+      "guests": [
+        {
+          "guestId": "rsvp_g003_p01",
+          "firstName": "Yulia"
+        },
+        {
+          "guestId": "rsvp_g003_p02",
+          "firstName": "Francis"
+        }
+      ]
+    },
+    {
+      "householdId": "rsvp_g004",
+      "familyNames": [],
+      "invitationVariant": "day",
+      "guests": [
+        {
+          "guestId": "rsvp_g004_p01",
+          "firstName": "Nelleke"
+        }
+      ]
+    },
+    {
+      "householdId": "rsvp_g005",
+      "familyNames": [],
+      "invitationVariant": "day",
+      "guests": [
+        {
+          "guestId": "rsvp_g005_p01",
+          "firstName": "Dineke"
+        }
+      ]
+    },
+    {
+      "householdId": "rsvp_g006",
+      "familyNames": [],
+      "invitationVariant": "day",
+      "guests": [
+        {
+          "guestId": "rsvp_g006_p01",
+          "firstName": "Joke"
+        }
+      ]
+    },
+    {
+      "householdId": "rsvp_g007",
+      "familyNames": [],
+      "invitationVariant": "day",
+      "guests": [
+        {
+          "guestId": "rsvp_g007_p01",
+          "firstName": "Wout"
+        },
+        {
+          "guestId": "rsvp_g007_p02",
+          "firstName": "Riny"
+        },
+        {
+          "guestId": "rsvp_g007_p03",
+          "firstName": "Petra"
+        }
+      ]
+    },
+    {
+      "householdId": "rsvp_g009",
+      "familyNames": [],
+      "invitationVariant": "day",
+      "guests": [
+        {
+          "guestId": "rsvp_g009_p01",
+          "firstName": "Miguel"
+        }
+      ]
+    },
+    {
+      "householdId": "rsvp_g010",
+      "familyNames": [],
+      "invitationVariant": "day",
+      "guests": [
+        {
+          "guestId": "rsvp_g010_p01",
+          "firstName": "Lisa"
+        },
+        {
+          "guestId": "rsvp_g010_p02",
+          "firstName": "Bob"
+        }
+      ]
+    },
+    {
+      "householdId": "rsvp_g011",
+      "familyNames": [],
+      "invitationVariant": "day",
+      "guests": [
+        {
+          "guestId": "rsvp_g011_p01",
+          "firstName": "Lianne"
+        },
+        {
+          "guestId": "rsvp_g011_p02",
+          "firstName": "Sjoerd"
+        }
+      ]
+    },
+    {
+      "householdId": "rsvp_g012",
+      "familyNames": [],
+      "invitationVariant": "day",
+      "guests": [
+        {
+          "guestId": "rsvp_g012_p01",
+          "firstName": "Naomi"
+        }
+      ]
+    },
+    {
+      "householdId": "rsvp_g013",
+      "familyNames": [],
+      "invitationVariant": "day",
+      "guests": [
+        {
+          "guestId": "rsvp_g013_p01",
+          "firstName": "Vera"
+        },
+        {
+          "guestId": "rsvp_g013_p02",
+          "firstName": "Rafiq"
+        }
+      ]
+    },
+    {
+      "householdId": "rsvp_g014",
+      "familyNames": [],
+      "invitationVariant": "day",
+      "guests": [
+        {
+          "guestId": "rsvp_g014_p01",
+          "firstName": "Hannah"
+        },
+        {
+          "guestId": "rsvp_g014_p02",
+          "firstName": "Riaad"
+        }
+      ]
+    },
+    {
+      "householdId": "rsvp_g015",
+      "familyNames": [],
+      "invitationVariant": "day",
+      "guests": [
+        {
+          "guestId": "rsvp_g015_p01",
+          "firstName": "Lisette"
+        },
+        {
+          "guestId": "rsvp_g015_p02",
+          "firstName": "Stijn"
+        }
+      ]
+    },
+    {
+      "householdId": "rsvp_g016",
+      "familyNames": [],
+      "invitationVariant": "day",
+      "guests": [
+        {
+          "guestId": "rsvp_g016_p01",
+          "firstName": "Jenna"
+        },
+        {
+          "guestId": "rsvp_g016_p02",
+          "firstName": "Luciën"
+        }
+      ]
+    },
+    {
+      "householdId": "rsvp_g017",
+      "familyNames": [],
+      "invitationVariant": "day",
+      "guests": [
+        {
+          "guestId": "rsvp_g017_p01",
+          "firstName": "Kimberley"
+        },
+        {
+          "guestId": "rsvp_g017_p02",
+          "firstName": "Stan"
+        }
+      ]
+    },
+    {
+      "householdId": "rsvp_g019",
+      "familyNames": [],
+      "invitationVariant": "day",
+      "guests": [
+        {
+          "guestId": "rsvp_g019_p01",
+          "firstName": "Mélanie"
+        },
+        {
+          "guestId": "rsvp_g019_p02",
+          "firstName": "Luuk"
+        }
+      ]
+    },
+    {
+      "householdId": "rsvp_g020",
+      "familyNames": [],
+      "invitationVariant": "day",
+      "guests": [
+        {
+          "guestId": "rsvp_g020_p01",
+          "firstName": "Mandy"
+        },
+        {
+          "guestId": "rsvp_g020_p02",
+          "firstName": "Max"
+        }
+      ]
+    },
+    {
+      "householdId": "rsvp_g021",
+      "familyNames": [],
+      "invitationVariant": "day",
+      "guests": [
+        {
+          "guestId": "rsvp_g021_p01",
+          "firstName": "Beppe"
+        }
+      ]
+    },
+    {
+      "householdId": "rsvp_g022",
+      "familyNames": [
+        "Garcia",
+        "Joossen"
+      ],
+      "invitationVariant": "day",
+      "guests": [
+        {
+          "guestId": "rsvp_g022_p01",
+          "firstName": "Bernadette"
+        },
+        {
+          "guestId": "rsvp_g022_p02",
+          "firstName": "Diego"
+        }
+      ]
+    },
+    {
+      "householdId": "rsvp_g023",
+      "familyNames": [
+        "Garcia",
+        "Witmer"
+      ],
+      "invitationVariant": "day",
+      "guests": [
+        {
+          "guestId": "rsvp_g023_p01",
+          "firstName": "Derrel"
+        },
+        {
+          "guestId": "rsvp_g023_p02",
+          "firstName": "Tayna"
+        }
+      ]
+    },
+    {
+      "householdId": "rsvp_g024",
+      "familyNames": [
+        "Garcia",
+        "van der Meijden"
+      ],
+      "invitationVariant": "day",
+      "guests": [
+        {
+          "guestId": "rsvp_g024_p01",
+          "firstName": "Felice"
+        },
+        {
+          "guestId": "rsvp_g024_p02",
+          "firstName": "Milan"
+        }
+      ]
+    },
+    {
+      "householdId": "rsvp_g025",
+      "familyNames": [
+        "Joossen"
+      ],
+      "invitationVariant": "day",
+      "guests": [
+        {
+          "guestId": "rsvp_g025_p01",
+          "firstName": "Arif"
+        },
+        {
+          "guestId": "rsvp_g025_p02",
+          "firstName": "Bart"
+        }
+      ]
+    },
+    {
+      "householdId": "rsvp_g026",
+      "familyNames": [
+        "Betgem",
+        "Overbeek"
+      ],
+      "invitationVariant": "day",
+      "guests": [
+        {
+          "guestId": "rsvp_g026_p01",
+          "firstName": "Christy"
+        },
+        {
+          "guestId": "rsvp_g026_p02",
+          "firstName": "Ruben"
+        }
+      ]
+    },
+    {
+      "householdId": "rsvp_g027",
+      "familyNames": [
+        "Tuiniga",
+        "van Assem"
+      ],
+      "invitationVariant": "day",
+      "guests": [
+        {
+          "guestId": "rsvp_g027_p01",
+          "firstName": "Wieger"
+        },
+        {
+          "guestId": "rsvp_g027_p02",
+          "firstName": "Iduna"
+        }
+      ]
+    },
+    {
+      "householdId": "rsvp_g028",
+      "familyNames": [
+        "Garcia"
+      ],
+      "invitationVariant": "day",
+      "guests": [
+        {
+          "guestId": "rsvp_g028_p01",
+          "firstName": "Orlando"
+        }
+      ]
+    },
+    {
+      "householdId": "rsvp_g029",
+      "familyNames": [
+        "Slotemaker"
+      ],
+      "invitationVariant": "day",
+      "guests": [
+        {
+          "guestId": "rsvp_g029_p01",
+          "firstName": "Tim"
+        },
+        {
+          "guestId": "rsvp_g029_p02",
+          "firstName": "Demi"
+        }
+      ]
+    },
+    {
+      "householdId": "rsvp_g030",
+      "familyNames": [
+        "Garcia",
+        "Stellingwerf"
+      ],
+      "invitationVariant": "day",
+      "guests": [
+        {
+          "guestId": "rsvp_g030_p01",
+          "firstName": "Oma Dolly"
+        }
+      ]
+    },
+    {
+      "householdId": "rsvp_g033",
+      "familyNames": [],
+      "invitationVariant": "evening",
+      "guests": [
+        {
+          "guestId": "rsvp_g033_p01",
+          "firstName": "Maaike"
+        }
+      ]
+    },
+    {
+      "householdId": "rsvp_g034",
+      "familyNames": [],
+      "invitationVariant": "evening",
+      "guests": [
+        {
+          "guestId": "rsvp_g034_p01",
+          "firstName": "Marten"
+        }
+      ]
+    },
+    {
+      "householdId": "rsvp_g035",
+      "familyNames": [],
+      "invitationVariant": "evening",
+      "guests": [
+        {
+          "guestId": "rsvp_g035_p01",
+          "firstName": "Liza"
+        },
+        {
+          "guestId": "rsvp_g035_p02",
+          "firstName": "Alper"
+        }
+      ]
+    },
+    {
+      "householdId": "rsvp_g036",
+      "familyNames": [],
+      "invitationVariant": "evening",
+      "guests": [
+        {
+          "guestId": "rsvp_g036_p01",
+          "firstName": "Elsemieke"
+        }
+      ]
+    }
+  ]
+}

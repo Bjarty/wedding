@@ -40,12 +40,14 @@ export const RSVP_REQUEST_TIMEOUT_MILLISECONDS = 80_000;
 
 export const credentialRequestFields = (
   credential: RsvpCredential,
-): { inviteToken: string } | { accessCode: string } | { nameTicket: string } =>
+): { inviteToken: string } | { accessCode: string } | { nameTicket: string } | { publicGroupId: string } =>
   credential.type === 'inviteToken'
     ? { inviteToken: credential.value }
     : credential.type === 'nameTicket'
       ? { nameTicket: credential.value }
-    : { accessCode: credential.value };
+      : credential.type === 'publicGroupId'
+        ? { publicGroupId: credential.value }
+        : { accessCode: credential.value };
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -291,6 +293,9 @@ export const resolveHousehold = async (
   );
   const household = parseResolvedHousehold(data);
   if (household === null) throw new RsvpApiError('UPSTREAM_UNAVAILABLE');
+  if (credential.type === 'publicGroupId' && household.householdId !== credential.value) {
+    throw new RsvpApiError('UPSTREAM_UNAVAILABLE');
+  }
   return household;
 };
 

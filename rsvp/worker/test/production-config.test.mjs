@@ -9,6 +9,7 @@ test('committed production template has no endpoint and requires every secret', 
   assert.match(productionTemplate, /^preview_urls = false$/m);
   assert.match(productionTemplate, /^ALLOWED_ORIGIN = "https:\/\/lisetteenbjarty\.nl"$/m);
   assert.match(productionTemplate, /^HOUSEHOLD_CODES_ENABLED = "false"$/m);
+  assert.match(productionTemplate, /^NAME_LOOKUP_ENABLED = "false"$/m);
   assert.match(productionTemplate, /^TURNSTILE_EXPECTED_HOSTNAME = "lisetteenbjarty\.nl"$/m);
   assert.doesNotMatch(productionTemplate, /^\s*(?:account_id|route|routes|custom_domain)\s*=/m);
 

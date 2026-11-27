@@ -17,6 +17,35 @@ The browser never calls Apps Script directly. The Worker never logs request
 bodies and never forwards a raw invitation token, readable household code or
 raw client IP. All responses use `Cache-Control: no-store`.
 
+## Name-first RSVP
+
+The approved new flow lets a guest search by first name or family name, select
+their group and complete or edit its RSVP, without entering a code. Names are
+not identity verification: anyone who can find a group can view and change
+that group's RSVP. Turnstile, result bounds and rate limits reduce automated
+abuse but do not make the guest list secret or prove who is responding.
+
+The guest directory stays in the private Sheet, never in Git or the static
+website bundle. Only matching group labels are returned, never contact
+details, answers or the entire directory. The writer is authoritative about
+active groups, day/evening policy, meal requirements and the complete guest set.
+
+After search, the Worker issues a one-hour `nameTicket` for each result. It is
+a selection capability, not a login. Its format is
+`nt1.<base64url payload>.<base64url signature>`; its payload contains only
+`v=1`, `householdId` and `expiresAt` (Unix seconds). Its HMAC-SHA256 signature
+uses `ACCESS_CODE_HASH_SECRET` and the distinct prefix
+`rsvp-name-selection-v1\0` before the encoded payload. Canonical encoding,
+signature, purpose/version, expiry and payload shape are validated before
+each resolve or submit; signature checking uses Web Crypto verification.
+Rotation of that secret also invalidates outstanding name selections.
+
+Keep tickets in tab memory and JSON request bodies only, never URLs, local
+storage, logs or Sheet cells. The writer receives only `nameHouseholdId` in
+the existing signed envelope and rechecks the active directory entry on every
+request. The public API never accepts a raw household ID as a credential.
+Expired selections return `INVITATION_INVALID`; guests can search again.
+
 ## Credentials and hashes
 
 The personal link should carry its high-entropy token in the URL fragment, not
@@ -32,7 +61,7 @@ tokenHash = base64url(HMAC-SHA256(INVITATION_TOKEN_HASH_SECRET, UTF-8 inviteToke
 The same algorithm and secret must be used by the offline invitation
 provisioning process. `Invitations` stores `tokenHash`, never the raw token.
 
-The recommended shared-QR flow uses a six-character household code from the
+The retained legacy shared-QR flow uses a six-character household code from the
 alphabet `23456789ABCDEFGHJKMNPQRSTVWXYZ`, displayed as `XXX-XXX`. During the
 transition, the Worker also accepts previously issued 20-character codes
 exactly; no intermediate lengths are valid. Input is case-insensitive; ASCII
@@ -47,14 +76,17 @@ accessCodeHash = base64url(HMAC-SHA256(
 ))
 ```
 
-Every request contains exactly one credential: `inviteToken` for a legacy
-fragmentlink or `accessCode` for the shared QR. The writer receives exactly one
-corresponding hash. Readable codes remain only in browser memory and the
+Resolve and submit contain exactly one credential: `nameTicket` for name-first
+selection, `inviteToken` for a legacy fragment link or `accessCode` for the
+legacy shared QR. The writer receives exactly one corresponding
+`nameHouseholdId`, `tokenHash` or `accessCodeHash`. Legacy credentials remain
+supported during reviewed migration/rollback, without being shown in the new
+name-first interface. Readable codes remain only in browser memory and the
 private distribution file outside the repository.
 
 ## Public v1 endpoints
 
-Both endpoints accept only `POST` with `Content-Type: application/json`, require
+All endpoints accept only `POST` with `Content-Type: application/json`, require
 the exact configured `Origin`, and validate a single-use Turnstile token on the
 server. Cookies and browser credentials are not used. Before the body or a
 credential is parsed, global (300/minute) and privacy-safe per-client
@@ -63,9 +95,43 @@ domain-separated HMAC of Cloudflare's client IP; the raw IP is never a key or
 log value. Per-credential limits then allow 10 resolve attempts and 5 submit
 attempts per 60 seconds.
 
+### `POST /v1/households/search`
+
+Requires the exact Worker variable `NAME_LOOKUP_ENABLED=true`. Missing or
+`false` leaves the route unavailable. Turnstile action: `rsvp_search`.
+
+```json
+{
+  "query": "Voorbeeld",
+  "turnstileToken": "turnstile-response"
+}
+```
+
+Queries are trimmed and NFC-normalized, 2–80 characters with at least two
+letters. Unicode letters/marks, spaces, apostrophes, hyphens and periods are
+accepted; wildcards and control characters are not. The writer performs name
+matching including its case/accent normalization. Search queries go only in
+the POST body and signed writer payload, never a URL or log.
+
+Success data is `{ matches: [{ displayName, nameTicket }], tooMany: false }`
+with at most eight groups. `tooMany: true` always has `matches: []`, requiring
+a more precise query instead of exposing a truncated directory page. A search
+without matches returns an empty list with `tooMany: false`.
+
+In addition to global and client limits, `RESOLVE_RATE_LIMITER` checks a
+stable `name-search:<client-HMAC>` key before reading the body: ten searches
+per client per minute, independent of changing query text. Resolve and submit
+use a stable HMAC of the selected household ID with the separate
+`rsvp-name-household-rate-v1\0` domain. Reissuing a ticket does not reset its
+group's limits. The existing binding namespaces are reused with distinct keys;
+no new rate-limit binding or secret is needed.
+
 ### `POST /v1/households/resolve`
 
 Turnstile action: `rsvp_resolve`.
+
+Name-first requests send `nameTicket` in place of `accessCode` in the legacy
+example below; all other request and response fields are unchanged.
 
 ```json
 {
@@ -103,6 +169,8 @@ When a response already exists, `currentRsvp` contains `revision`, stable
 
 Turnstile action: `rsvp_submit`.
 
+Name-first requests likewise send `nameTicket` in place of `accessCode`.
+
 ```json
 {
   "accessCode": "<persoonlijke-code-uit-privébestand>",
@@ -123,8 +191,8 @@ Turnstile action: `rsvp_submit`.
 `evening` guest and forbidden for each guest who is not attending. Its values
 are `fish`, `meat`, `vegetarian`, and `vegan`. The Worker permits omission so
 the writer can enforce the stored private policy definitively. The browser
-sends every guest returned by resolve exactly once. Names
-are never accepted from the browser. Provisioning must satisfy
+sends every guest returned by resolve exactly once. Guest names and group
+membership are never editable through a browser submission. Provisioning must satisfy
 `guests.length <= maxGuests`: every preset guest must be able to attend. The
 writer checks this before returning resolve data, and the Worker rejects any
 upstream response that violates it, so the browser never renders an impossible
@@ -163,8 +231,8 @@ idempotent.
 
 The email contains the stable receipt number but no invitation token, readable
 household code, attendance, meal choices, or free-text message. A receipt is a
-reference, not a credential: modifying an RSVP still requires the same personal
-household code.
+reference, not a credential: in the name-first flow guests search and select
+their group again to edit. Legacy flows still use their existing credential.
 
 ## Error contract
 
@@ -230,8 +298,9 @@ string below, using `WRITER_HMAC_SECRET`:
 v1.<timestamp>.<requestId>.<payload>
 ```
 
-Resolve data is exactly one of `{ tokenHash }` or `{ accessCodeHash }`. Submit
-data starts with exactly one of those hashes, followed by `idempotencyKey`,
+Search data is exactly `{ query }`. Resolve data is exactly one of
+`{ nameHouseholdId }`, `{ tokenHash }` or `{ accessCodeHash }`. Submit
+data starts with exactly one of those selectors, followed by `idempotencyKey`,
 `revision`, `attending`, `guests`, `email?` and `message?`. Apps Script must compare the
 signature in constant time, enforce a short timestamp window, verify the
 decoded request ID, validate the complete guest set and revision under a lock,
@@ -249,6 +318,9 @@ Public, non-secret Worker variables:
 - `ALLOWED_ORIGIN=https://lisetteenbjarty.nl`
 - `HOUSEHOLD_CODES_ENABLED=false` until the matching writer schema and data are
   reviewed; set exact `true` only for an approved environment
+- `NAME_LOOKUP_ENABLED=false` (or absent) until the name-search writer, private
+  directory and name-only access policy are reviewed; set exact `true` only
+  after the separate production migration below
 - `TURNSTILE_EXPECTED_HOSTNAME=lisetteenbjarty.nl`
 
 There is deliberately no Resend or confirmation-email variable in the Worker.
@@ -261,8 +333,10 @@ Cloudflare rate-limit bindings:
 
 - `GLOBAL_RATE_LIMITER`: 300 requests for the endpoint as a whole per 60 seconds
 - `CLIENT_RATE_LIMITER`: 30 requests per HMAC-anonymized client per 60 seconds
-- `RESOLVE_RATE_LIMITER`: 10 requests per credential hash per 60 seconds
-- `SUBMIT_RATE_LIMITER`: 5 requests per credential hash per 60 seconds
+- `RESOLVE_RATE_LIMITER`: 10 requests per credential hash/name-selected group
+  per 60 seconds; also 10 searches per client on a separate key
+- `SUBMIT_RATE_LIMITER`: 5 requests per credential hash/name-selected group
+  per 60 seconds
 
 The numeric namespace IDs in `wrangler.toml` are account-scoped. Confirm that
 they are unused in the target Cloudflare account before the first deployment.
@@ -307,6 +381,37 @@ vier rate-limit namespace-ID's uitsluitend voor de productie-Worker worden
 gebruikt.
 
 ## Fail-closed productieactivering
+
+### Aanvullende migratie voor zoeken op naam
+
+Deze codewijziging activeert niets op productie. Bestaande code-/linkroutes
+blijven werken zolang hun huidige configuratie behouden blijft.
+
+1. Beoordeel eerst de diff, tests, directory-import en de expliciete keuze voor
+   toegang op naam zonder identiteitscontrole. Maak een private backup van de
+   productie-Sheet. Volg de Apps Script-instructies voor de naamdirectory en
+   import; verander geen bestaande antwoorden, IDs of groepssamenstellingen
+   zonder hun eigen beoordeelde migratie.
+2. Laat `NAME_LOOKUP_ENABLED` in de Worker en de gelijknamige Script Property
+   uit. Installeer eerst de nieuwe writer/schema. Importeer alleen beoordeelde
+   groepen; onduidelijke of dubbele groepslabels blijven onvindbaar tot ze zijn
+   opgehelderd. Controleer de exacte deploymentversie van de writer.
+3. Deploy de beoordeelde Worker met behoud van alle huidige secrets, origin,
+   bindings en legacy-vlaggen. Zet daarna pas de naamlookup-flag aan in de writer
+   en Worker. De bestaande Turnstile-widget moet de nieuwe actie `rsvp_search`
+   accepteren; verruim de toegestane hostname niet.
+4. Controleer met een afgesproken synthetische groep zoeken, selecteren, eerste
+   inzending, opnieuw zoeken en wijzigen, verlopen selectie, intrekking,
+   dag-/avondbeleid, foutafhandeling en mail. Zet pas daarna
+   `VITE_RSVP_NAME_LOOKUP_ENABLED=true` voor de gereviewde Pages-build.
+5. Bij problemen: zet eerst de Worker- én writer-naamlookupvlag uit. Ook reeds
+   uitgegeven tickets moeten dan worden geweigerd. Herstel de frontend via een
+   beoordeelde build; bestaande code-/linkroutes kunnen als rollback blijven
+   bestaan. De naamlookupvlag stopt die legacy-routes niet. Voor een volledige
+   RSVP-stop blijft het bestaande backend-stoprunbook leidend.
+
+De onderstaande oorspronkelijke provisioning beschrijft een eerste inrichting,
+niet het opnieuw aanmaken van secrets of een Sheet bij deze naamlookup-migratie.
 
 Deze procedure gebruikt uitsluitend productieresources en maakt de Worker pas
 in een afzonderlijke, expliciet beoordeelde stap publiek. Voer de commando's vanuit

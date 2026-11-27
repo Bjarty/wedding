@@ -19,9 +19,10 @@ toegangsinstelling. De productieresources worden bewust handmatig beheerd.
   Google-eigenaaraccount. Het adres daarvan blijft buiten Git.
 - De Sheet houdt **Algemene toegang: Beperkt** en wordt niet publiek
   gedeeld.
-- Alleen keyed credential-hashes komen in Sheets en server-to-server requests.
-  Ruwe uitnodigingstokens en persoonlijke codes worden niet naar Apps Script
-  gestuurd.
+- De oude toegangsroutes gebruiken keyed credential-hashes. De naamzoekroute
+  ontvangt alleen de zoektekst voor `search` en een door de Worker gecontroleerde
+  `nameHouseholdId` voor resolve/submit. Ruwe uitnodigingstokens, persoonlijke
+  codes en tijdelijke selectietickets worden nooit naar Apps Script gestuurd.
 - Vooraf ingestelde `guestId`-waarden en namen komen uit de private Sheet;
   submit accepteert nooit een naam vanuit de browser.
 - E-mail en bericht zijn optioneel. Als de afzonderlijke mailfunctie actief is,
@@ -70,7 +71,9 @@ Provisioning vult per huishouden één `Invitations`-rij en één of meer
 - Vul voor een oude persoonlijke fragmentlink alleen `tokenHash` in en voor
   een persoonlijke huishoudcode alleen `accessCodeHash`. Tijdens een
   gecontroleerde overgang mogen beide hashes op dezelfde rij staan. Minstens
-  één hash is verplicht; iedere ingevulde hash heeft exact 43 base64url-tekens.
+  één hash is verplicht voor deze oude toegangsroutes; iedere ingevulde hash
+  heeft exact 43 base64url-tekens. Alleen groepen die via de hieronder beschreven
+  naamzoekimport zijn ingericht mogen beide hashes leeg hebben.
 - `invitationVariant` is exact `day` of `evening`. In deze versie is het
   bijbehorende beleid onveranderlijk: `day` vereist de echte boolean `TRUE`
   voor `mealChoiceRequired`; `evening` vereist `FALSE`.
@@ -103,6 +106,145 @@ beschermd. Voor logische tekst die na optionele witruimte begint met `=`, `+`,
 Sheets consumeert precies die prefix; `getValues()` levert daarna de originele
 logische tekst terug en `getFormulas()` moet leeg blijven. De tekstnotatie
 beschermt ook namen die tijdens provisioning worden ingevoerd.
+
+## Naam zoeken zonder persoonlijke code
+
+Deze route is op uitdrukkelijk verzoek **naam-only**, zonder identiteitscontrole.
+Wie een naam kent en de bijbehorende groep kiest, kan de groepsleden en bestaande
+RSVP (ook het optionele e-mailadres en bericht) bekijken en wijzigen. De private
+Sheet en een begrensde zoek-API voorkomen een openbare download van de hele
+lijst, maar maken namen niet geheim en bewijzen niet wie de bezoeker is.
+
+De route staat standaard uit. Zet Script Property `NAME_LOOKUP_ENABLED` pas na
+de beoordeelde import en Worker-publicatie op exact `true`; een ontbrekende of
+andere waarde weigert zoeken en naamgebaseerde resolve/submit. De bestaande
+hashroutes blijven beschikbaar voor een gecontroleerde rollback. De Worker
+verifieert een kortlevend selectieticket; de writer ontvangt uitsluitend
+`{ "nameHouseholdId": "groep-id" }` als nieuwe, wederzijds uitsluitende
+credential. Ook een idempotente submitretry controleert bij naamtoegang opnieuw
+dat zowel `NameDirectory.active` als `Invitations.active` waar zijn.
+
+### Twee nieuwe private beheertabbladen
+
+Voer eerst `initNameLookupSheets()` uit. Dit maakt de onderstaande tabbladen
+zonder de bestaande zes tabbladen of hun kolommen te wijzigen. De functie stopt
+bij afwijkende bestaande headers. Zij maakt niets publiek en voegt geen scope toe.
+
+| Tab | Exacte kolommen |
+| --- | --- |
+| `GuestRoster` | `householdId`, `guestId`, `firstName`, `familyNames`, `invitationVariant`, `searchEnabled`, `reviewNote` |
+| `NameDirectory` | `householdId`, `displayName`, `searchNames`, `active` |
+
+`GuestRoster` heeft één persoon per rij. Gebruik dezelfde `householdId` voor
+personen die samen antwoorden; behoud bestaande IDs en geef nieuwe personen
+nieuwe stabiele `guestId`-waarden. Eén achternaam kan bij verschillende groepen
+horen; leden van één groep mogen verschillende achternamen hebben.
+
+- `firstName` is de opgegeven persoonsnaam. De import kent geen ontbrekende
+  achternamen toe.
+- `familyNames` bevat **groepsaliassen**, gescheiden door komma's. Zet dezelfde
+  lijst op alle rijen van een groep. Hiermee zoek je op een familienaam zonder
+  te raden welke naam bij welke persoon hoort. Zoekresultaten tonen altijd de
+  groep, nooit een veronderstelde voornaam-achternaamcombinatie als identiteit.
+- `invitationVariant` is voor ieder groepslid gelijk: `day` of `evening`.
+  Het laatste betekent geen maaltijdvraag; `day` vraagt een keuze per aanwezige.
+- `searchEnabled` is `TRUE` of `FALSE`. Een lege of ongeldige waarde blokkeert
+  de import; gebruik `FALSE` voor nog niet bevestigde personen/groepen.
+- `reviewNote` blijft leeg voor publiceerbare groepen. Een niet-lege notitie,
+  ontbrekende voornaam, onbekende variant of `searchEnabled=FALSE` sluit de
+  **hele groep** uit. Vraagtekens blijven dus in de private bron, niet als
+  stilzwijgend bevestigde uitnodiging. Een eerder gepubliceerde groep eerst
+  expliciet uitschakelen; de import trekt die niet stilzwijgend in.
+
+De import bouwt een herkenbare `displayName` uit de voornamen en groepsaliassen,
+en slaat `searchNames` op als JSON-array. Vul `NameDirectory` niet handmatig met
+toegangstickets, codes, antwoorden, adressen of e-mailadressen. Twee ingeschakelde
+groepen met dezelfde zichtbare naam worden geweigerd; maak ze eerst herkenbaar
+verschillend, zonder ze op basis van de naam samen te voegen.
+
+### Importeren en later aanvullen
+
+1. Maak een beperkte, afgeschermde backup van de bestaande Sheet. Vergelijk de
+   aangeleverde groeps- en persoons-IDs met bestaande productiegegevens. Een
+   nieuwe lijst krijgt niet automatisch een nieuwe groep voor iemand die al
+   geantwoord heeft: **koppel bestaande IDs expliciet**, niet via een gok op naam.
+   De import blokkeert een exacte overeenkomst met een bestaande Invitation-naam
+   onder een ander ID, maar kan semantische overeenkomsten niet betrouwbaar raden.
+2. Plak de beoordeelde gegevens als waarden in `GuestRoster`, met headers exact
+   zoals hierboven. Bewaar de aangeleverde privébestanden buiten Git. Formules
+   in het stagingtabblad worden geweigerd.
+3. Draai `previewGuestRosterImport()`. Dit schrijft niets en retourneert alleen
+   aantallen: gereedstaande groepen/personen, gewijzigde groepen en uitgesloten
+   groepen/personen. Het retourneert geen namen of codes voor execution logs.
+4. Noteer de huidige `RSVP_CLOSE_AT`. Zet deze op een tijdstip in het verleden
+   en zet `NAME_LOOKUP_ENABLED=false`. Pauzeer tijdens de migratie ook de mail
+   met `CONFIRMATION_EMAIL_ENABLED=false`, zodat nieuwe outboxitems tijdens de
+   tijdelijke naamzoekstop niet met de oude codetekst worden ingepland.
+   Herstel eventuele pending submitintents
+   via `recoverAllPendingIntents()` en controleer dat er geen pending write meer
+   bestaat. Importeren weigert zolang deze stopvoorwaarden niet voldaan zijn.
+5. Draai `importGuestRoster()`. Alle invoer wordt eerst gevalideerd onder
+   `ScriptLock`. Nieuwe groepen en personen worden toegevoegd; de import wist
+   nooit gastregels, bestaande antwoorden, historische intents of mailrecords.
+6. Controleer de aantallen, een groep met meerdere achternamen, een daggroep en
+   een avondgroep. Herstel pas na een geslaagde import en beoordeling de eerder
+   genoteerde RSVP-deadline en activeer naamzoeken. Herstel daarna de eerder
+   ingestelde mailvlag; oude reeds aangemaakte mailitems behouden hun template.
+   Deploy vervolgens de
+   beoordeelde Worker/frontend volgens hun runbooks; deze beheerfuncties doen dat niet.
+
+Ongewijzigd opnieuw importeren doet geen domeinwrites. Je kunt nieuwe groepen
+toevoegen en ongeantwoorde groepen aanvullen. Voor al beantwoorde groepen mag je
+alleen zichtbare namen/familiealiassen corrigeren met **dezelfde** groeps- en
+persoons-IDs, leden, variant en capaciteit. De import wijzigt dan uitsluitend
+naamcellen en de zoekindex; keuzes, e-mail, bericht, ontvangstnummer, revisies en
+alle RSVP-tijdstempels blijven intact. De tests controleren dat oude idempotente
+retries daarna hetzelfde resultaat blijven geven.
+
+Een persoon verwijderen/verplaatsen, een gast toevoegen aan een beantwoorde
+groep, of dag/avond/capaciteit wijzigen na een antwoord vereist een apart
+beoordeelde datamigratie. De import weigert dit. Een ingetrokken invitation wordt
+nooit automatisch gereactiveerd.
+
+### Herstellen na een onderbroken import
+
+De import slaat alleen een hash van de staginginhoud en de betrokken groeps-IDs
+op in Script Property `NAME_ROSTER_IMPORT_PENDING`, geen namen of codes. Eerst
+wordt de betrokken zoekindex uitgeschakeld; nog ongeantwoorde invitations worden
+ook tijdelijk inactief. Pas na de complete schrijfacties worden ze vrijgegeven.
+De RSVP-deadline blijft tijdens de gehele import gesloten.
+
+Bij een fout: laat de stopvoorwaarden staan, verander `GuestRoster` niet en voer
+dezelfde import opnieuw uit. De import hervat op de bestaande stabiele IDs en
+maakt geen dubbele rijen. Een gewijzigde staginglijst wordt geweigerd zolang een
+checkpoint bestaat. Verwijder dat checkpoint niet als hersteltruc; beoordeel
+bij blijvende fouten eerst de beperkte backup en de partiële toestand. Pas na
+volledige afronding verwijdert de functie het checkpoint zelf.
+
+### Zoekcontract, mail en retentie
+
+De gesigneerde writer-operation `search` accepteert uitsluitend `{ "query": "naam" }`.
+De query heeft 2–80 tekens en minstens twee letters. Hoofdletters, accenten en
+extra spaties worden genormaliseerd. Er worden maximaal acht groepen teruggegeven
+als `{ matches: [{ householdId, displayName }], tooMany: false }`; bij meer
+overeenkomsten is het resultaat `{ matches: [], tooMany: true }` zodat de gast
+gerichter zoekt. Geen paginering of endpoint voor een volledige lijst. De Worker
+vervangt het interne groeps-ID door een tijdelijk ticket voor de browser.
+
+Zoeken valt onder dezelfde gesloten deadline, HMAC-envelope, replaycontrole en
+Worker-rate-limits/Turnstile als de andere routes. De writer bewaart voor search
+alleen een request-ID/tijdmarker; geen zoektekst of resultaten in `Idempotency`
+of logs. Zoekresultaten bevatten geen bestaande antwoorden, e-mail of bericht.
+
+Nieuwe bevestigingsmails gebruiken voor actieve, doorzoekbare groepen bij ingeschakelde naamzoekfunctie template
+`rsvp_confirmation_names_v2`: opnieuw zoeken op naam om te wijzigen, zonder code.
+De bestaande `rsvp_confirmation_v1`-renderer blijft onveranderd voor oude,
+reeds geclaimde mailitems; hun retries behouden hetzelfde payload en MAC.
+
+`GuestRoster` en `NameDirectory` vallen onder dezelfde privacy-/retentietermijn
+als de RSVP-gegevens. De bestaande bevestigde Sheet-clear neemt deze optionele
+tabbladen mee en verwijdert ook een achtergebleven importcheckpoint. Versiehistorie
+en backups vragen nog steeds de bestaande definitieve verwijderprocedure.
 
 ### Veilige migratie van de legacy Invitations-header
 

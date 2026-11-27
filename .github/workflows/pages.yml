@@ -50,6 +50,9 @@ jobs:
           # explicit in the reviewed deployment workflow so a stale repository
           # variable cannot make the live RSVP copy untruthful.
           VITE_RSVP_ENABLED: ${{ vars.VITE_RSVP_ENABLED }}
+          # Activate only after the reviewed writer, private roster and Worker
+          # migration. Name search takes precedence over the legacy code UI.
+          VITE_RSVP_NAME_LOOKUP_ENABLED: ${{ vars.VITE_RSVP_NAME_LOOKUP_ENABLED }}
           VITE_RSVP_HOUSEHOLD_CODES_ENABLED: ${{ vars.VITE_RSVP_HOUSEHOLD_CODES_ENABLED }}
           VITE_RSVP_CONFIRMATION_EMAIL_ENABLED: 'true'
           VITE_RSVP_API_BASE_URL: ${{ vars.VITE_RSVP_API_BASE_URL }}

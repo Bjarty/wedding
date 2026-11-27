@@ -212,6 +212,23 @@ export interface SiteContent {
       submitLabel: string;
       switchLabel: string;
     };
+    nameEntry: {
+      heading: string;
+      introduction: string;
+      label: string;
+      placeholder: string;
+      helper: string;
+      submitLabel: string;
+      switchLabel: string;
+      searching: string;
+      resultsHeading: string;
+      noResults: string;
+      tooMany: string;
+      invalidQuery: string;
+      error: string;
+      closed: string;
+      privacyNote: string;
+    };
     form: {
       invitationHeading: string;
       dayVariantLabel: string;
@@ -233,6 +250,8 @@ export interface SiteContent {
       emailHelper: string;
       emailConfirmationEnabledNote: string;
       emailConfirmationDisabledNote: string;
+      emailConfirmationNameEnabledNote: string;
+      emailConfirmationNameDisabledNote: string;
       emailConfirmationDemoNote: string;
       messageLabel: string;
       messageHelper: string;
@@ -242,11 +261,19 @@ export interface SiteContent {
       privacyMessage: string;
       privacyEmailDisabledMessage: string;
       demoPrivacyMessage: string;
+      namePrivacyMessage: string;
     };
     states: {
       loading: string;
       invalidLink: string;
       invalidCode: string;
+      invalidNameSelection: string;
+      nameRenewalHeading: string;
+      nameRenewalMessage: string;
+      nameRenewalWrongGroup: string;
+      nameRenewalChangedGroup: string;
+      nameRenewalConflict: string;
+      nameRenewalReady: string;
       loadError: string;
       offline: string;
       submitting: string;
@@ -258,6 +285,7 @@ export interface SiteContent {
       success: string;
       receiptLabel: string;
       receiptAccessHelper: string;
+      receiptNameAccessHelper: string;
       receiptEmailEnabledHelper: string;
       receiptEmailEmptyHelper: string;
       receiptEmailDisabledHelper: string;

@@ -104,3 +104,20 @@ test('privacyteksten onderscheiden live verzending van lokale demodata', () => {
     demo: true,
   }), rsvp.form.demoPrivacyMessage);
 });
+
+test('naamgebaseerde RSVP verwijst voor wijzigingen alleen naar zoeken op naam', () => {
+  for (const confirmationEmailEnabled of [true, false]) {
+    const options = { confirmationEmailEnabled, demo: false, nameLookup: true };
+    const note = getEmailConfirmationNote(rsvp, options);
+    assert.match(note, /[Zz]oek opnieuw op je naam/u);
+    assert.match(note, /10 april 2027/u);
+    assert.doesNotMatch(note, /persoonlijke code|uitnodigingslink|XXX-XXX/u);
+    const receipt = getReceiptHelperText(rsvp, { ...options, email: 'gast@example.test' });
+    assert.match(receipt, /[Zz]oek opnieuw op je naam/u);
+    assert.doesNotMatch(receipt, /persoonlijke code|uitnodigingslink|XXX-XXX/u);
+    const privacy = getPrivacyMessage(rsvp, options);
+    assert.match(privacy, /zonder identiteitscontrole/u);
+    assert.match(privacy, /bekijken en wijzigen/u);
+    assert.doesNotMatch(privacy, /alleen worden bekeken door/u);
+  }
+});

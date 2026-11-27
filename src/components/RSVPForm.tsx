@@ -1,6 +1,6 @@
 import { useLayoutEffect, useState } from 'react';
 import { siteContent } from '../content/siteContent';
-import { invitationDemoServices } from '../features/rsvp/demoRsvp';
+import { invitationDemoNameSearchServices, invitationDemoServices } from '../features/rsvp/demoRsvp';
 import RsvpExperience from '../features/rsvp/RsvpExperience';
 import { getRsvpConfig } from '../features/rsvp/config';
 import {
@@ -10,12 +10,14 @@ import {
 } from '../features/rsvp/inviteToken';
 import HouseholdCodeEntry from './HouseholdCodeEntry';
 import RsvpUnavailable from './RsvpUnavailable';
+import NameSearchEntry from './NameSearchEntry';
 
 const rsvpConfig = getRsvpConfig();
 const invitationDemoConfig = {
   apiBaseUrl: 'https://local-demo.invalid',
   turnstileSiteKey: 'local-demo',
   householdCodesEnabled: true,
+  nameLookupEnabled: true,
   confirmationEmailEnabled: false,
 };
 
@@ -27,6 +29,7 @@ export default function RSVPForm() {
     new URLSearchParams(window.location.search).get('demo') === 'invitation';
   const [demoCredential, setDemoCredential] = useState<string | null>(null);
   const [householdCode, setHouseholdCode] = useState<string | null>(null);
+  const [nameTicket, setNameTicket] = useState<string | null>(null);
   const [{ inviteToken, shouldRemoveFragment }] = useState(() => {
     if (typeof window === 'undefined') return { inviteToken: null, shouldRemoveFragment: false };
     return {
@@ -59,7 +62,7 @@ export default function RSVPForm() {
             <div className="mx-auto mb-6 max-w-2xl rounded-2xl border border-amber-200 bg-amber-50 px-5 py-4 text-sm leading-relaxed text-amber-950" role="note">
               <p className="font-bold">Lokale demonstratie</p>
               <p className="mt-1">
-                De Familie Garcia-code werkt alleen op deze computer. Testreacties blijven tijdelijk in dit tabblad en gaan niet naar Cloudflare of Google Sheets.
+                Zoek op Alex, Sam of Garcia om de voorbeeldgroep te openen. Dit zijn fictieve gasten. Testreacties blijven tijdelijk in dit tabblad en gaan niet naar Cloudflare of Google Sheets.
               </p>
               <a
                 href="/?preview=invitation"
@@ -69,7 +72,7 @@ export default function RSVPForm() {
               </a>
             </div>
             {demoCredential === null ? (
-              <HouseholdCodeEntry onAccepted={setDemoCredential} />
+              <NameSearchEntry config={invitationDemoConfig} onSelected={setDemoCredential} services={invitationDemoNameSearchServices} demo />
             ) : (
               <>
                 <div className="mx-auto mb-5 flex max-w-3xl justify-end">
@@ -78,14 +81,15 @@ export default function RSVPForm() {
                     onClick={() => setDemoCredential(null)}
                     className="min-h-11 rounded-full border border-cream/25 px-5 py-3 text-xs font-bold uppercase tracking-[0.15em] text-cream outline-none hover:border-sage hover:text-sage focus-visible:ring-2 focus-visible:ring-sage focus-visible:ring-offset-2 focus-visible:ring-offset-stone-dark"
                   >
-                    Andere code proberen
+                    {rsvp.nameEntry.switchLabel}
                   </button>
                 </div>
                 <RsvpExperience
                   autoFocusHeading
                   config={invitationDemoConfig}
-                  credential={{ type: 'accessCode', value: demoCredential }}
+                  credential={{ type: 'nameTicket', value: demoCredential }}
                   services={invitationDemoServices}
+                  nameSearchServices={invitationDemoNameSearchServices}
                   demo
                 />
               </>
@@ -98,6 +102,27 @@ export default function RSVPForm() {
             config={rsvpConfig}
             credential={{ type: 'inviteToken', value: inviteToken }}
           />
+        ) : rsvpConfig.nameLookupEnabled ? (
+          nameTicket === null ? (
+            <NameSearchEntry config={rsvpConfig} onSelected={setNameTicket} />
+          ) : (
+            <>
+              <div className="mx-auto mb-5 flex max-w-3xl justify-end">
+                <button
+                  type="button"
+                  onClick={() => setNameTicket(null)}
+                  className="min-h-12 rounded-full border border-cream/40 px-5 py-3 text-base font-semibold text-cream outline-none hover:border-sage hover:text-sage focus-visible:ring-2 focus-visible:ring-sage focus-visible:ring-offset-2 focus-visible:ring-offset-stone-dark"
+                >
+                  {rsvp.nameEntry.switchLabel}
+                </button>
+              </div>
+              <RsvpExperience
+                autoFocusHeading
+                config={rsvpConfig}
+                credential={{ type: 'nameTicket', value: nameTicket }}
+              />
+            </>
+          )
         ) : rsvpConfig.householdCodesEnabled ? (
           householdCode === null ? (
             <HouseholdCodeEntry onAccepted={setHouseholdCode} />

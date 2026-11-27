@@ -18,6 +18,7 @@ test('activeert RSVP alleen met de expliciete true-vlag en beide publieke waarde
     apiBaseUrl: 'https://rsvp-api.example.test',
     turnstileSiteKey: 'test-site-key',
     householdCodesEnabled: true,
+    nameLookupEnabled: false,
     confirmationEmailEnabled: true,
   });
 });
@@ -32,6 +33,7 @@ test('staat onversleuteld HTTP alleen toe voor lokale ontwikkeling', () => {
     apiBaseUrl: 'http://localhost:8787',
     turnstileSiteKey: 'test-site-key',
     householdCodesEnabled: true,
+    nameLookupEnabled: false,
     confirmationEmailEnabled: true,
   });
   assert.equal(parseRsvpConfig({ ...local, DEV: false }), null);
@@ -51,6 +53,7 @@ test('huishoudcodes staan alleen aan met de expliciete true-vlag', () => {
       apiBaseUrl: 'https://rsvp-api.example.test',
       turnstileSiteKey: 'test-site-key',
       householdCodesEnabled: false,
+      nameLookupEnabled: false,
       confirmationEmailEnabled: true,
     },
   );
@@ -73,6 +76,7 @@ test('bevestigingsmail staat alleen aan met de expliciete true-vlag', () => {
       apiBaseUrl: 'https://rsvp-api.example.test',
       turnstileSiteKey: 'test-site-key',
       householdCodesEnabled: true,
+      nameLookupEnabled: false,
       confirmationEmailEnabled: false,
     },
   );
@@ -83,4 +87,14 @@ test('bevestigingsmail staat alleen aan met de expliciete true-vlag', () => {
     })?.confirmationEmailEnabled,
     false,
   );
+});
+
+test('zoeken op naam staat alleen aan na expliciete activering en behoudt rollbackvlaggen', () => {
+  for (const value of [undefined, 'false', 'TRUE', '1']) {
+    assert.equal(parseRsvpConfig({ ...configuredEnvironment, VITE_RSVP_NAME_LOOKUP_ENABLED: value })?.nameLookupEnabled, false);
+  }
+  const active = parseRsvpConfig({ ...configuredEnvironment, VITE_RSVP_NAME_LOOKUP_ENABLED: 'true' });
+  assert.equal(active?.nameLookupEnabled, true);
+  assert.equal(active?.householdCodesEnabled, true);
+  assert.equal(parseRsvpConfig({ VITE_RSVP_NAME_LOOKUP_ENABLED: 'true' }), null);
 });

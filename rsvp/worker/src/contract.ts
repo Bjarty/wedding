@@ -1,11 +1,13 @@
 export const API_VERSION = 'v1' as const;
 
 export const ROUTES = {
+  search: '/v1/households/search',
   resolve: '/v1/households/resolve',
   submit: '/v1/rsvps/submit',
 } as const;
 
 export const TURNSTILE_ACTIONS = {
+  search: 'rsvp_search',
   resolve: 'rsvp_resolve',
   submit: 'rsvp_submit',
 } as const;
@@ -25,6 +27,10 @@ export const LIMITS = {
   accessCodeLength: 6,
   legacyAccessCodeLength: 20,
   accessCodeInputMax: 32,
+  nameQueryMin: 2,
+  nameQueryMax: 80,
+  nameSearchMatchesMax: 8,
+  nameTicketMax: 512,
   turnstileTokenMax: 2_048,
   idMax: 64,
   displayNameMax: 160,
@@ -46,6 +52,7 @@ export interface Env {
   CLIENT_RATE_LIMITER: RateLimitBinding;
   GLOBAL_RATE_LIMITER: RateLimitBinding;
   HOUSEHOLD_CODES_ENABLED: string;
+  NAME_LOOKUP_ENABLED?: string;
   INVITATION_TOKEN_HASH_SECRET: string;
   RESOLVE_RATE_LIMITER: RateLimitBinding;
   SUBMIT_RATE_LIMITER: RateLimitBinding;
@@ -56,12 +63,30 @@ export interface Env {
 }
 
 export type InvitationCredential =
-  | { inviteToken: string; accessCode?: never }
-  | { accessCode: string; inviteToken?: never };
+  | { inviteToken: string; accessCode?: never; nameTicket?: never }
+  | { accessCode: string; inviteToken?: never; nameTicket?: never }
+  | { nameTicket: string; inviteToken?: never; accessCode?: never };
 
 export type CredentialHash =
-  | { tokenHash: string; accessCodeHash?: never }
-  | { accessCodeHash: string; tokenHash?: never };
+  | { tokenHash: string; accessCodeHash?: never; nameHouseholdId?: never }
+  | { accessCodeHash: string; tokenHash?: never; nameHouseholdId?: never }
+  | { nameHouseholdId: string; tokenHash?: never; accessCodeHash?: never };
+
+export interface SearchRequest {
+  query: string;
+  turnstileToken: string;
+}
+
+/** Writer-only selection data; never return household identifiers directly. */
+export interface WriterSearchResult {
+  matches: Array<{ householdId: string; displayName: string }>;
+  tooMany: boolean;
+}
+
+export interface SearchResult {
+  matches: Array<{ displayName: string; nameTicket: string }>;
+  tooMany: boolean;
+}
 
 export type ResolveRequest = InvitationCredential & {
   turnstileToken: string;
@@ -163,7 +188,7 @@ export interface PublicSuccessBody<T> {
   data: T;
 }
 
-export type WriterOperation = 'resolve' | 'submit';
+export type WriterOperation = 'search' | 'resolve' | 'submit';
 
 export interface WriterPayload<T> {
   version: typeof API_VERSION;

@@ -1,7 +1,6 @@
 import { ArrowLeft, Download, ExternalLink, Printer } from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
 import { siteContent } from '../content/siteContent';
-import { LEGACY_PUBLIC_DEMO_HOUSEHOLD_CODE } from '../features/rsvp/householdCode';
 
 const SHARED_RSVP_URL = 'https://lisetteenbjarty.nl/#rsvp';
 
@@ -37,7 +36,7 @@ export default function InvitationPreview() {
           <p className="text-xs font-bold uppercase tracking-[0.2em] text-[#80612B]">Lokale drukproef</p>
           <h1 className="mt-2 text-3xl">Voorbeeld Familie Garcia</h1>
           <p className="mt-2 max-w-2xl text-sm leading-relaxed text-stone-dark/65">
-            Fictieve daggastuitnodiging. De zichtbare code werkt alleen in de lokale demonstratie en is geen echte toegangscode.
+            Fictieve daggastuitnodiging. Via “Test RSVP” kun je lokaal zoeken op Alex, Sam of Garcia. Reacties uit deze demonstratie worden niet verstuurd.
           </p>
         </div>
         <div className="mt-5 flex flex-wrap gap-3 sm:mt-0 sm:justify-end">
@@ -152,10 +151,7 @@ export default function InvitationPreview() {
 
               <p className="mt-2 text-xs font-semibold text-stone-dark/65">lisetteenbjarty.nl</p>
               <p className="mt-4 text-[0.65rem] font-bold uppercase tracking-[0.14em] text-stone-dark/55 sm:text-xs">
-                Gebruik daarna jullie persoonlijke code
-              </p>
-              <p className="mt-2 select-all font-mono text-sm font-bold tracking-[0.12em] text-stone-dark sm:text-base">
-                {LEGACY_PUBLIC_DEMO_HOUSEHOLD_CODE}
+                Zoek daarna op je voornaam of achternaam
               </p>
             </div>
           </article>
